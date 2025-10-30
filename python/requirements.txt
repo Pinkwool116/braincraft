@@ -1,0 +1,13 @@
+# Python Dependencies for Three-Layer Brain System
+
+# Async OpenAI client
+openai>=1.0.0
+
+# Anthropic Claude client
+anthropic>=0.7.0
+
+# ZeroMQ for IPC
+pyzmq>=25.0.0
+
+# Optional: For local Ollama support
+# aiohttp>=3.9.0

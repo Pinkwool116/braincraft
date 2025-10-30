@@ -1,0 +1,90 @@
+{
+    "agent_name": "BrainyBot",
+    "ipc_port": 9000,
+    "keys_file": "keys.json",
+    "three_layer_brain_llm": {
+        "description": "Configuration for three-layer brain LLM models - Using Qwen by default",
+        "high_level_brain": {
+            "model_name": "qwen-max",
+            "api": "qwen",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 8000,
+                "top_p": 0.9
+            },
+            "interval_seconds": 300,
+            "system_prompt_file": "python/prompts/high_level_planning_prompt.txt"
+        },
+        "mid_level_brain": {
+            "model_name": "qwen-plus",
+            "api": "qwen",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "params": {
+                "temperature": 0.5,
+                "max_tokens": 4000,
+                "top_p": 0.9
+            },
+            "system_prompt_file": "python/prompts/mid_level_coding_prompt.txt",
+            "interval_seconds": 1,
+            "max_task_retries": 3
+        },
+        "low_level_brain": {
+            "interval_seconds": 0.1,
+            "reflex_enabled": true,
+            "event_queue_size": 100,
+            "modes": {
+                "self_preservation": false,
+                "cowardice": false,
+                "hunting": false,
+                "item_collecting": true,
+                "torch_placing": true,
+                "elbow_room": true,
+                "idle_staring": true
+            }
+        },
+        "alternative_models": {
+            "openai_high": {
+                "model_name": "gpt-4o",
+                "api": "openai",
+                "params": {
+                    "temperature": 0.7,
+                    "max_tokens": 2000
+                }
+            },
+            "openai_mid": {
+                "model_name": "gpt-4o-mini",
+                "api": "openai",
+                "params": {
+                    "temperature": 0.5,
+                    "max_tokens": 2000
+                }
+            },
+            "claude": {
+                "model_name": "claude-3-5-sonnet-20241022",
+                "api": "anthropic",
+                "params": {
+                    "temperature": 0.7,
+                    "max_tokens": 2000
+                }
+            },
+            "deepseek": {
+                "model_name": "deepseek-chat",
+                "api": "deepseek",
+                "params": {
+                    "temperature": 0.7,
+                    "max_tokens": 2000
+                }
+            },
+            "local_ollama": {
+                "model_name": "llama3.1:8b",
+                "api": "ollama",
+                "base_url": "http://localhost:11434",
+                "params": {
+                    "temperature": 0.7,
+                    "num_ctx": 8192
+                }
+            }
+        }
+    }
+}

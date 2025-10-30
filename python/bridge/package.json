@@ -1,0 +1,23 @@
+{
+    "name": "mindcraft-bridge",
+    "version": "1.0.0",
+    "description": "Bridge between Mineflayer and Three-Layer Brain Python system",
+    "type": "module",
+    "main": "minecraft_bridge.js",
+    "scripts": {
+        "start": "node minecraft_bridge.js"
+    },
+    "dependencies": {
+        "mineflayer": "^4.33.0",
+        "mineflayer-pathfinder": "^2.4.5",
+        "mineflayer-pvp": "^1.3.2",
+        "mineflayer-collectblock": "^1.4.1",
+        "mineflayer-auto-eat": "^3.3.6",
+        "mineflayer-armor-manager": "^2.0.1",
+        "minecraft-data": "^3.97.0",
+        "vec3": "^0.1.10",
+        "zeromq": "^6.0.0-beta.20"
+    },
+    "author": "MindCraft Team",
+    "license": "MIT"
+}
