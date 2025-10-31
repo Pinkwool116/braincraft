@@ -118,19 +118,10 @@ class MidLevelBrain:
         Called every second by the coordinator.
         
         Priority order:
-        1. Check for resume request (from bottom-up interruption)
-        2. Check for chat messages (can interrupt execution)
-        3. Check for guidance response from high-level (if waiting)
-        4. Execute current task plan step
+        1. Check for chat messages (can interrupt execution)
+        2. Check for guidance response from high-level (if waiting)
+        3. Execute current task plan step
         """
-        # Priority 0: Check for resume request
-        resume_requested = await self.shared_state.get('mid_task_resume_requested')
-        if resume_requested:
-            await self.shared_state.update('mid_task_resume_requested', False)
-            logger.info("✅ Resuming interrupted mid-level task")
-            # continue to task execution
-            # donot return
-        
         # Priority 1: Chat messages are now handled directly via _handle_pending_chat()
         # No need to check chat_queue here since brain_coordinator calls handler directly
         
@@ -246,6 +237,12 @@ class MidLevelBrain:
                                                reason="Failed after multiple attempts",
                                                failures=current_step.get('failures', []))
         
+        except asyncio.CancelledError:
+            # Step was interrupted by higher priority action
+            # Don't mark as failed, will be resumed by ExecutionCoordinator
+            logger.info(f"⚠️ Step {current_step_index + 1} was interrupted, will resume when possible")
+            # Keep status as 'in_progress' so it can be resumed
+        
         except Exception as e:
             logger.error(f"Error executing step: {e}", exc_info=True)
             await self._update_step_status(current_step_index, 'failed')
@@ -302,7 +299,7 @@ class MidLevelBrain:
                     # Handle cancellation - will be resumed later
                     if result.get('cancelled'):
                         logger.info("⚠️ Task was cancelled by higher priority action - will resume")
-                        return False  # Let the resume mechanism handle it
+                        raise asyncio.CancelledError("Task interrupted by higher priority action")
                     
                     success = result.get('success', False)
                     error_msg = result.get('error', 'Unknown error')
@@ -328,6 +325,12 @@ class MidLevelBrain:
                                                            reason=f"Failed {attempt + 1} times, may not be achievable",
                                                            failures=failures)
                             return False
+            
+            except asyncio.CancelledError:
+                # Task was interrupted by higher priority action
+                # Don't count as failure, re-raise to propagate cancellation
+                logger.info(f"⚠️ Attempt {attempt + 1} was interrupted by higher priority action")
+                raise
             
             except Exception as e:
                 logger.error(f"Error in attempt {attempt + 1}: {e}", exc_info=True)
@@ -661,7 +664,14 @@ Suggestion:"""
         
         # Replace placeholders
         prompt = prompt.replace('$NAME', state.get('agent_name', 'Agent'))
-        prompt = prompt.replace('$TASK', task.get('description', 'No description'))
+        
+        CODE_RULES = """
+            CRITICAL: Error handling rules:
+            1. Check results: if (!success) { throw new Error("Failed") }
+            2. Never swallow errors: catch(e) { throw e } or re-throw
+            3. Don't use empty catch blocks
+        """
+        prompt = prompt.replace('$TASK', f"{task.get('description', 'No description')}\n\n{CODE_RULES}")
         
         # Add task plan context
         task_plan = await self.shared_state.get('task_plan')

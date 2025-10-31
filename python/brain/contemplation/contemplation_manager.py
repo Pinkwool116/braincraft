@@ -187,254 +187,87 @@ class ContemplationManager:
             return False
     
     async def _consolidate_experiences(self) -> bool:
-        """Consolidate recent experiences into higher-level patterns"""
+        """
+        Consolidate recent experiences into higher-level patterns
         
-        recent_experiences = self.memory.learned_experience.get('insights', [])[-20:]
-        recent_lessons = self.memory.learned_experience.get('lessons_learned', [])[-10:]
-        
-        if len(recent_experiences) < 5:
-            return False
-        
-        prompt = f"""You are reflecting quietly on your recent experiences, looking for patterns.
-
-RECENT EXPERIENCES:
-{json.dumps([exp['summary'] for exp in recent_experiences], indent=2)}
-
-RECENT LESSONS:
-{json.dumps([lesson['lesson'] for lesson in recent_lessons], indent=2)}
-
-Look for PATTERNS across these experiences:
-1. What common themes emerge?
-2. Can you formulate a general principle?
-3. Is there a deeper insight hidden in these scattered experiences?
-
-Example: If you learned "oak logs work for building" and "birch logs work too" and "spruce logs also work",
-the pattern might be "different wood types are interchangeable for basic construction".
-
-Respond with JSON:
-{{
-  "pattern_found": "description of the pattern you discovered",
-  "general_principle": "a broader insight (max 25 words)",
-  "confidence": 0.8,
-  "should_add_to_knowledge": true
-}}
-
-Your contemplation:"""
-        
-        try:
-            response = await self.llm.send_request([], prompt)
-            reflection = json.loads(self._extract_json(response))
-            
-            # Add to knowledge base if meets threshold
-            if (reflection.get('should_add_to_knowledge', False) and 
-                reflection.get('confidence', 0) > self.config['output']['add_to_knowledge_threshold']):
-                
-                self.memory.add_experience(
-                    summary=reflection['general_principle'],
-                    details={
-                        'derived_from': len(recent_experiences),
-                        'pattern': reflection['pattern_found'],
-                        'type': 'contemplative_insight',
-                        'confidence': reflection['confidence'],
-                        'contemplation_mode': 'consolidate_experiences'
-                    }
-                )
-                
-                logger.info(f"💡 New insight from contemplation: {reflection['general_principle']}")
-                return True
-            
-            return False
-        
-        except Exception as e:
-            logger.error(f"Error in consolidate_experiences: {e}")
-            return False
+        TODO: Implement experience consolidation
+        - Analyze recent experiences and lessons
+        - Find common patterns
+        - Generate general principles
+        - Return JSON with: {pattern_found, general_principle, confidence, should_add_to_knowledge}
+        - Store valuable insights to memory.add_experience()
+        """
+        logger.debug("TODO: consolidate_experiences not implemented")
+        return False
     
     async def _connect_insights(self) -> bool:
-        """Find creative connections between different insights"""
+        """
+        Find creative connections between different insights
         
-        insights = self.memory.learned_experience.get('insights', [])
-        
-        if len(insights) < 3:
-            return False
-        
-        # Randomly select 2-3 insights
-        selected = random.sample(insights, min(3, len(insights)))
-        
-        prompt = f"""You are daydreaming, letting your mind wander and make unexpected connections.
-
-UNRELATED INSIGHTS:
-{json.dumps([ins['summary'] for ins in selected], indent=2)}
-
-Can you find a surprising CONNECTION between these seemingly unrelated insights?
-Or combine them to generate a NEW IDEA or HYPOTHESIS?
-
-Example:
-- Insight A: "Water flows downward"
-- Insight B: "Crops need water"
-→ Connection: "I could build farms at lower elevations near water sources for easier irrigation"
-
-Respond with JSON:
-{{
-  "connection": "what connects these ideas",
-  "new_hypothesis": "a new idea or possibility (max 25 words)",
-  "creative_value": 0.7
-}}
-
-Your creative thought:"""
-        
-        try:
-            response = await self.llm.send_request([], prompt)
-            connection = json.loads(self._extract_json(response))
-            
-            # Add if creative value is high
-            if connection.get('creative_value', 0) > self.config['output']['add_to_knowledge_threshold']:
-                self.memory.add_experience(
-                    summary=connection['new_hypothesis'],
-                    details={
-                        'type': 'creative_connection',
-                        'source_insights': [s['summary'] for s in selected],
-                        'connection_reasoning': connection['connection'],
-                        'contemplation_mode': 'connect_insights'
-                    }
-                )
-                
-                logger.info(f"🌟 Creative connection: {connection['new_hypothesis']}")
-                return True
-            
-            return False
-        
-        except Exception as e:
-            logger.error(f"Error in connect_insights: {e}")
-            return False
+        TODO: Implement insight connection
+        - Randomly select 2-3 unrelated insights
+        - Find surprising connections or generate new hypotheses
+        - Return JSON with: {connection, new_hypothesis, creative_value}
+        - Store high-value connections to memory.add_experience()
+        """
+        logger.debug("TODO: connect_insights not implemented")
+        return False
     
     async def _self_reflection_light(self) -> bool:
-        """Quick self-awareness check (lightweight)"""
+        """
+        Quick self-awareness check (lightweight)
         
-        # Get self-awareness if available
-        if not hasattr(self, 'self_awareness'):
-            return False
-        
-        prompt = f"""You have a brief moment of self-awareness during idle time.
-
-Your satisfaction level: {self.mental_state.mood.get('satisfaction', 0.5)}
-
-A quick thought about yourself (one sentence, honest and introspective):"""
-        
-        try:
-            thought = await self.llm.send_request([], prompt)
-            thought = thought.strip()
-            
-            # Add to pending reflections for deeper processing later
-            if hasattr(self.mental_state, 'focus'):
-                if 'pending_reflections' not in self.mental_state.focus:
-                    self.mental_state.focus['pending_reflections'] = []
-                self.mental_state.focus['pending_reflections'].append(thought)
-                
-                logger.info(f"💭 Self-thought: {thought[:80]}...")
-                return True
-            
-            return False
-        
-        except Exception as e:
-            logger.error(f"Error in self_reflection_light: {e}")
-            return False
+        TODO: Implement self-reflection
+        - Check current satisfaction level and goals
+        - Generate introspective thought
+        - Return JSON with: {thought, insight_value, should_remember}
+        - Store valuable self-insights to memory or self_awareness
+        - Store temporary thoughts to mental_state.focus['pending_reflections']
+        """
+        logger.debug("TODO: self_reflection_light not implemented")
+        return False
     
     async def _relationship_pondering(self) -> bool:
-        """Think about relationships with others"""
+        """
+        Think about relationships with others
         
-        if not self.memory.players:
-            return False
-        
-        # Pick a random player to think about
-        player_name = random.choice(list(self.memory.players.keys()))
-        player_info = self.memory.players[player_name]
-        
-        prompt = f"""You are thinking about your relationship with {player_name}.
-
-INTERACTIONS:
-{json.dumps(player_info, indent=2)}
-
-A brief thought about this relationship (one sentence):"""
-        
-        try:
-            thought = await self.llm.send_request([], prompt)
-            thought = thought.strip()
-            
-            # Save as a short-term memory
-            self.memory.add_short_term_memory(
-                'relationship_contemplation',
-                f"Thought about {player_name}: {thought}",
-                {'player': player_name}
-            )
-            
-            logger.info(f"👥 Relationship thought: {thought[:80]}...")
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error in relationship_pondering: {e}")
-            return False
+        TODO: Implement relationship reflection
+        - Pick a random player from memory.players
+        - Analyze recent interactions
+        - Return JSON with: {thought, relationship_insight, insight_value}
+        - Store valuable insights to memory.add_experience()
+        - Store casual thoughts to memory.add_short_term_memory()
+        """
+        logger.debug("TODO: relationship_pondering not implemented")
+        return False
     
     async def _existential_wonder(self) -> bool:
-        """Wonder about existence and meaning"""
+        """
+        Wonder about existence and meaning
         
-        # Needs some life experience
-        if not hasattr(self.goal_hierarchy, 'life_events'):
-            return False
-        
-        if len(self.goal_hierarchy.life_events) < 2:
-            return False
-        
-        prompt = """You have a moment of existential contemplation.
-
-What is your purpose? What brings meaning to your existence?
-
-A philosophical thought (one sentence):"""
-        
-        try:
-            thought = await self.llm.send_request([], prompt)
-            thought = thought.strip()
-            
-            # Add to pending reflections
-            if hasattr(self.mental_state, 'focus'):
-                if 'pending_reflections' not in self.mental_state.focus:
-                    self.mental_state.focus['pending_reflections'] = []
-                self.mental_state.focus['pending_reflections'].append(thought)
-                
-                logger.info(f"🌌 Existential thought: {thought[:80]}...")
-                return True
-            
-            return False
-        
-        except Exception as e:
-            logger.error(f"Error in existential_wonder: {e}")
-            return False
+        TODO: Implement existential contemplation
+        - Requires life_events from goal_hierarchy
+        - Reflect on purpose and meaning
+        - Return JSON with: {thought, value_discovered, insight_value}
+        - Store discovered core values to memory.add_experience()
+        - Store philosophical thoughts to mental_state.focus['pending_reflections']
+        """
+        logger.debug("TODO: existential_wonder not implemented")
+        return False
     
     async def _creative_daydream(self) -> bool:
-        """Imagine new possibilities"""
+        """
+        Imagine new possibilities
         
-        prompt = """You let your mind wander and imagine something new.
-
-What creative idea or possibility crosses your mind?
-
-A creative thought (one sentence):"""
-        
-        try:
-            thought = await self.llm.send_request([], prompt)
-            thought = thought.strip()
-            
-            # Save as short-term memory
-            self.memory.add_short_term_memory(
-                'creative_daydream',
-                thought,
-                {'type': 'creative'}
-            )
-            
-            logger.info(f"✨ Creative daydream: {thought[:80]}...")
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error in creative_daydream: {e}")
-            return False
+        TODO: Implement creative daydreaming
+        - Let mind wander based on recent experiences
+        - Generate creative ideas
+        - Return JSON with: {thought, idea_type, creativity_value}
+        - Store high-creativity ideas to memory.add_experience()
+        - Store casual daydreams to memory.add_short_term_memory()
+        """
+        logger.debug("TODO: creative_daydream not implemented")
+        return False
     
     def _extract_json(self, text: str) -> str:
         """Extract JSON from LLM response"""
@@ -457,18 +290,16 @@ A creative thought (one sentence):"""
         """
         Get current contemplation progress (for interruption handling)
         
+        TODO: Implement progress tracking
+        - Track which mode is currently active
+        - Save partial LLM results if interrupted
+        - Return state dict for resume_from_temp()
+        
         Returns:
             Dictionary with current contemplation state, or None if not contemplating
         """
-        # Check if there's active contemplation state to save
-        # For now, we don't track fine-grained progress within a contemplation
-        # But we can save which mode was active
-        
-        # This is a placeholder - in a more advanced implementation,
-        # you could track partial results from LLM calls
-        
         return {
-            'mode': 'idle',  # Would be set to actual mode if we tracked it
+            'mode': 'idle',
             'context': None,
             'progress': None
         }
@@ -477,6 +308,11 @@ A creative thought (one sentence):"""
         """
         Resume interrupted contemplation from temp data
         
+        TODO: Implement contemplation resumption
+        - Parse temp_data to get mode and progress
+        - Continue from where it left off (or restart)
+        - Execute remaining work
+        
         Args:
             temp_data: Saved contemplation state
         
@@ -484,22 +320,5 @@ A creative thought (one sentence):"""
             True if successfully resumed and completed
         """
         mode = temp_data.get('mode', 'unknown')
-        logger.info(f"🔄 Attempting to resume contemplation: {mode}")
-        
-        # Since we don't have fine-grained progress tracking yet,
-        # we simply restart the contemplation
-        # In a more advanced implementation, you could continue from where it left off
-        
-        if mode in ['knowledge_synthesis', 'goal_reflection', 'pattern_recognition',
-                    'memory_consolidation', 'existential_wonder', 'creative_daydream']:
-            try:
-                result = await self._execute_mode(mode)
-                if result:
-                    logger.info(f"✅ Successfully resumed and completed: {mode}")
-                return result
-            except Exception as e:
-                logger.error(f"Error resuming contemplation: {e}")
-                return False
-        else:
-            logger.warning(f"Unknown contemplation mode to resume: {mode}")
-            return False
+        logger.debug(f"TODO: resume_from_temp not implemented for mode: {mode}")
+        return False

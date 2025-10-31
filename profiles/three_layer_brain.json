@@ -4,6 +4,11 @@
     "keys_file": "keys.json",
     "three_layer_brain_llm": {
         "description": "Configuration for three-layer brain LLM models - Using Qwen by default",
+        "_config_notes": {
+            "high_level_interval_seconds": "Controls contemplation check interval. High-level brain wakes up periodically to check if it should contemplate (default: 900s = 15 minutes). It also wakes instantly when mid-level requests help.",
+            "mid_level_interval_seconds": "Controls how often mid-level brain executes tasks (default: 1s)",
+            "low_level_interval_seconds": "Controls reflex response speed (default: 0.1s)"
+        },
         "high_level_brain": {
             "model_name": "qwen-max",
             "api": "qwen",
@@ -13,7 +18,7 @@
                 "max_tokens": 8000,
                 "top_p": 0.9
             },
-            "interval_seconds": 300,
+            "interval_seconds": 600,
             "system_prompt_file": "python/prompts/high_level_planning_prompt.txt"
         },
         "mid_level_brain": {

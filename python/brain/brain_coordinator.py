@@ -344,7 +344,7 @@ class BrainCoordinator:
         - Mid-level modification requests trigger immediate wake (event-driven)
         - Contemplation only happens during periodic wake if not busy
         """
-        contemplation_interval = self.config.get('high_level_brain', {}).get('interval_seconds', 900)  # 15 minutes
+        contemplation_interval = self.config.get('high_level_brain', {}).get('interval_seconds', 600)  # 10 minutes
         logger.info(f"High-level brain started:")
         logger.info(f"  - Event-driven: Instant response to mid-level requests")
         logger.info(f"  - Periodic contemplation check: every {contemplation_interval}s ({contemplation_interval/60:.0f} minutes)")

@@ -67,6 +67,9 @@ class BrainBridge {
         // Track total game ticks played across all worlds/sessions
         this.totalTicksPlayed = 0;  // Cumulative ticks played (persists across worlds)
         this.lastTimeOfDay = null;  // Last recorded timeOfDay (0-23999), null on init
+
+        // Track background code execution (for concurrent command handling)
+        this.codeExecutionPromise = null;
     }
 
     async initIPC() {
@@ -94,14 +97,15 @@ class BrainBridge {
         for await (const [msg] of this.subSocket) {
             try {
                 const command = JSON.parse(msg.toString());
-                await this.handleCommand(command);
+                // 🔥 Remove await to enable concurrent command handling
+                this.handleCommand(command);
             } catch (error) {
                 console.error('Error handling command:', error);
             }
         }
     }
 
-    async handleCommand(command) {
+    handleCommand(command) {
         const { type, data } = command;
 
         // Only log important commands (not frequent execution commands)
@@ -111,70 +115,62 @@ class BrainBridge {
 
         switch (type) {
             case 'execute_code':
-                await this.executeCode(data.code);
+                // Execute code in background, don't block other commands
+                // Pass priority flag if provided (for low-level mode checks)
+                this.executeCodeInBackground(data.code, data.priority || 'normal');
                 break;
 
             case 'set_interrupt_flag':
-                // Set interrupt flag for code execution (real-time interrupt mechanism)
-                // Python brain sets this to true when higher priority action needs to interrupt
+                // ⚡ Set interrupt flag immediately - code interrupt checks will take effect in real-time
                 if (this.bot && typeof data.value === 'boolean') {
                     this.bot.interrupt_code = data.value;
                     if (data.value) {
                         console.log('🛑 Interrupt flag set: bot.interrupt_code = true');
+                    } else {
+                        console.log('✅ Interrupt flag cleared: bot.interrupt_code = false');
                     }
                 }
                 break;
 
             case 'chat':
-                // Send chat message using /say command to avoid 1.19+ chat signing issues
-                try {
-                    const playerName = data.player_name || data.player;
-
-                    // Remove emojis and non-ASCII characters, replacing with space to avoid word merging
-                    let cleanMessage = data.message
-                        .replace(/[\u{1F600}-\u{1F64F}]/gu, ' ')  // Emoticons
-                        .replace(/[\u{1F300}-\u{1F5FF}]/gu, ' ')  // Misc Symbols and Pictographs
-                        .replace(/[\u{1F680}-\u{1F6FF}]/gu, ' ')  // Transport and Map
-                        .replace(/[\u{2600}-\u{26FF}]/gu, ' ')   // Misc symbols
-                        .replace(/[\u{2700}-\u{27BF}]/gu, ' ')   // Dingbats
-                        .replace(/[\u{1F900}-\u{1F9FF}]/gu, ' ')  // Supplemental Symbols and Pictographs
-                        .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, ' ')  // Flags
-                        .replace(/[^\x20-\x7E]/g, ' ')           // Replace non-ASCII with space
-                        .replace(/\s+/g, ' ')                    // Collapse multiple spaces
-                        .trim();
-
-                    if (cleanMessage) {
-                        console.log(`Sending chat: ${cleanMessage}`);
-
-                        // Use /say command to broadcast to all players (bypasses chat signing)
-                        this.bot.chat(`/say ${cleanMessage}`);
-                    } else {
-                        console.warn('Chat message became empty after filtering');
-                    }
-                } catch (err) {
-                    console.error('Failed to send chat message:', err.message);
-                }
-                break;
-
             case 'reflex':
-                // Immediate reflex action from low-level brain
-                await this.executeReflex(data);
-                break;
-
             case 'execute_skill':
-                // Execute a specific skill from low-level brain
-                await this.executeSkill(data);
+                // Execute immediate commands without blocking
+                this.handleImmediateCommand(type, data);
                 break;
 
             case 'shutdown':
                 // Graceful shutdown requested
                 console.log(`Shutdown requested: ${data.reason}`);
-                await this.gracefulShutdown(data.reason);
+                this.gracefulShutdown(data.reason);
                 break;
 
             default:
                 console.warn(`Unknown command type: ${type}`);
         }
+    }
+
+    executeCodeInBackground(code) {
+        // ExecutionCoordinator now manages concurrency at Python level
+        // JavaScript just executes what Python sends
+
+        // Start new code execution (non-blocking)
+        this.codeExecutionPromise = this.executeCode(code)
+            .catch(err => {
+                console.error('Background code execution error:', err);
+                // Send error result to Python
+                this.sendMessage({
+                    type: 'execution_result',
+                    data: {
+                        success: false,
+                        message: err.message || 'Code execution error'
+                    }
+                });
+            })
+            .finally(() => {
+                this.codeExecutionPromise = null;
+            });
+        // Function returns immediately, code runs in background
     }
 
     async executeCode(code) {
@@ -184,6 +180,9 @@ class BrainBridge {
         try {
             // Initialize bot.output for logging (similar to original agent)
             this.bot.output = '';
+
+            // Reset interrupt flag before execution
+            this.bot.interrupt_code = false;
 
             // Get state before execution
             const stateBefore = {
@@ -215,6 +214,25 @@ class BrainBridge {
             // console.log('Starting code execution...');  // Too verbose for modes
             await eval(wrappedCode);
             // console.log('Code execution completed');  // Too verbose for modes
+
+            // Check if code was interrupted
+            if (this.bot.interrupt_code) {
+                // Code was interrupted by chat - mark task as failed
+                const code_output = this.bot.output || 'No output';
+
+                await this.sendMessage({
+                    type: 'execution_result',
+                    data: {
+                        success: false,
+                        interrupted: true,
+                        output: code_output,
+                        message: `Task interrupted by chat message. No need to summarize, just try again. Output: ${code_output}`
+                    }
+                });
+
+                console.log('⚠️ Code execution interrupted by chat');
+                return;
+            }
 
             // Get state after execution
             const stateAfter = {
@@ -274,7 +292,57 @@ class BrainBridge {
             // Clean up
             this.bot.output = '';
         }
-    } async executeReflex(data) {
+    }
+
+    async handleImmediateCommand(type, data) {
+        // Handle immediate commands that should not be blocked by code execution
+        switch (type) {
+            case 'chat':
+                // Send chat message immediately
+                try {
+                    const playerName = data.player_name || data.player;
+
+                    // Remove emojis and non-ASCII characters, replacing with space to avoid word merging
+                    let cleanMessage = data.message
+                        .replace(/[\u{1F600}-\u{1F64F}]/gu, ' ')  // Emoticons
+                        .replace(/[\u{1F300}-\u{1F5FF}]/gu, ' ')  // Misc Symbols and Pictographs
+                        .replace(/[\u{1F680}-\u{1F6FF}]/gu, ' ')  // Transport and Map
+                        .replace(/[\u{2600}-\u{26FF}]/gu, ' ')   // Misc symbols
+                        .replace(/[\u{2700}-\u{27BF}]/gu, ' ')   // Dingbats
+                        .replace(/[\u{1F900}-\u{1F9FF}]/gu, ' ')  // Supplemental Symbols and Pictographs
+                        .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, ' ')  // Flags
+                        .replace(/[^\x20-\x7E]/g, ' ')           // Replace non-ASCII with space
+                        .replace(/\s+/g, ' ')                    // Collapse multiple spaces
+                        .trim();
+
+                    if (cleanMessage) {
+                        console.log(`💬 Immediate chat: ${cleanMessage}`);
+
+                        // Use /say command to broadcast to all players (bypasses chat signing)
+                        this.bot.chat(`/say ${cleanMessage}`);
+                    } else {
+                        console.warn('Chat message became empty after filtering');
+                    }
+                } catch (err) {
+                    console.error('Failed to send chat message:', err.message);
+                }
+                break;
+
+            case 'reflex':
+                // Execute immediate reflex action
+                await this.executeReflex(data);
+                break;
+
+            case 'execute_skill':
+                // Execute a specific skill
+                await this.executeSkill(data);
+                break;
+
+            default:
+                console.warn(`Unknown immediate command type: ${type}`);
+        }
+    }
+    async executeReflex(data) {
         // Execute immediate reflex actions
         const { action, params } = data;
 

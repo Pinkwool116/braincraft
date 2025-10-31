@@ -84,10 +84,6 @@ class LowLevelBrain:
         self.last_entity = None
         self.next_stare_change = 0
         
-        # Mode activity tracking (from modes.js)
-        # Only one mode can be active at a time
-        self.mode_active = False
-        
         # Register event handlers
         self.event_handlers = {
             'combat_engaged': self._handle_combat,
@@ -116,9 +112,6 @@ class LowLevelBrain:
         4. Unstuck
         5. Torch placing, Elbow room, Idle staring - Other modes
         """
-        # reset mode_active flag
-        self.mode_active = False
-        
         # Process queued events
         try:
             # Get event from queue (non-blocking)
@@ -129,37 +122,21 @@ class LowLevelBrain:
             pass
         
         # Periodic checks (following priority order)
-        # IMPORTANT: Only check modes if no mode is currently active
-        # This prevents multiple modes from executing simultaneously
+        # ExecutionCoordinator now manages concurrency, no need for mode_active
         
         # Priority 1: Reflexes 
         await self._check_self_preservation()
-        if self.mode_active:
-            return  # Stop checking other modes
         
         # Priority 2: Modes 
         await self.check_hunting()         # Hunt animals when idle
-        if self.mode_active:
-            return
-            
         await self.check_item_collecting() # Collect items when idle
-        if self.mode_active:
-            return
         
         # Priority 3: Unstuck
         await self._check_stuck()
-        if self.mode_active:
-            return
-            
-        # Priority 4: other
+        
+        # Priority 4: Other modes
         await self.check_torch_placing()   # Place torches when dark and idle
-        if self.mode_active:
-            return
-            
         await self.check_elbow_room()      # Move away from players when idle
-        if self.mode_active:
-            return
-            
         await self.check_idle_staring()    # Look around when idle
     
     async def receive_event(self, event: Dict[str, Any]):
@@ -210,7 +187,7 @@ class LowLevelBrain:
         Args:
             event: Combat event data with enemy_type, enemy_id
         """
-        if self.reflex_active or self.mode_active:
+        if self.reflex_active:
             return
         
         self.reflex_active = True
@@ -420,6 +397,39 @@ class LowLevelBrain:
         
         logger.debug(f"Execution result: {result.get('success')}")
     
+    async def _wait_for_execution_result(self, timeout: float = 30.0):
+        """
+        Wait for execution result from JavaScript
+        
+        Args:
+            timeout: Maximum time to wait in seconds
+        
+        Returns:
+            Execution result dictionary
+        """
+        # Clear previous result
+        await self.shared_state.update('last_execution_result', None)
+        
+        start_time = asyncio.get_event_loop().time()
+        poll_interval = 0.1
+        
+        while True:
+            result = await self.shared_state.get('last_execution_result')
+            
+            if result is not None:
+                return result
+            
+            # Check timeout
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                logger.error("Execution timeout - no response from JavaScript")
+                return {
+                    'success': False,
+                    'message': 'Execution timeout'
+                }
+            
+            # Wait before next check (this is a cancellation point)
+            await asyncio.sleep(poll_interval)
+    
     async def _handle_damage(self, event: Dict[str, Any]):
         """
         Handle damage event
@@ -491,7 +501,6 @@ class LowLevelBrain:
                     return
                 
                 if not result.get('blocked'):
-                    self.mode_active = True
                     self.stuck_time = 0  # Reset stuck time
             else:
                 # Backward compatibility
@@ -560,8 +569,7 @@ class LowLevelBrain:
                     logger.warning("⚠️ Reflex was cancelled (should not happen!)")
                     return
                 
-                if not result.get('blocked'):
-                    self.mode_active = True
+                # Low health reflex executed
             else:
                 
                 await self.receive_event({
@@ -670,70 +678,44 @@ class LowLevelBrain:
     
     async def check_hunting(self):
         """
-        Hunting mode: Hunt nearby animals when idle (ported from modes.js)
+        Hunting mode: Hunt nearby animals (ported from modes.js)
         
         Hunts animals within 8 blocks when idle.
         """
-        if self.reflex_active or self.mode_active:
+        if self.reflex_active:
             return
         
-        # Check if agent is idle (not executing task)
-        is_executing = await self.shared_state.get('is_executing')
-        if is_executing:
+        # Check if bot is ready
+        bot_ready = await self.shared_state.get('bot_ready') or False
+        if not bot_ready:
             return
         
         hunting_enabled = self.modes_config.get('hunting', True)
         if not hunting_enabled:
             return
         
-        
-        if await self._should_hunt():
-            # ExecutionCoordinator
-            if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-                result = await self.exec_coordinator.execute_action(
-                    layer='low_mode',
-                    label='mode:hunting',
-                    action_fn=lambda: self._do_hunt(),
-                    can_interrupt=['low_reflex'],
-                    auto_resume=True
-                )
-                
-                if result.get('cancelled'):
-                    logger.info("Hunting was cancelled by higher priority action")
-                    return
-                
-                if not result.get('blocked'):
-                    self.mode_active = True
-            else:
-                
-                try:
-                    await self.ipc_server.send_command({
-                        'type': 'execute_code',
-                        'data': {
-                            'code': """
-                                const huntable = world.getNearestEntityWhere(
-                                    bot, 
-                                    entity => mc.isHuntable(entity), 
-                                    8
-                                );
-                                if (huntable && await world.isClearPath(bot, huntable)) {
-                                    log(bot, `Hunting ${huntable.name}!`);
-                                    await skills.attackEntity(bot, huntable);
-                                }
-                            """
-                        }
-                    })
-                except Exception as e:
-                    logger.error(f"Hunting check error: {e}")
+        # Use ExecutionCoordinator to manage execution
+        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
+            result = await self.exec_coordinator.execute_action(
+                layer='low_auto',  # Autonomous mode - low priority, won't interrupt mid
+                label='hunting',
+                action_fn=lambda: self._execute_hunting(),
+                can_interrupt=[],  # Same priority modes don't interrupt each other
+                auto_resume=False
+            )
+            
+            if result.get('blocked'):
+                # Higher priority task is executing, skip silently
+                return
+            
+            if result.get('cancelled'):
+                logger.debug("Hunting was cancelled by higher priority action")
+                return
     
-    async def _should_hunt(self) -> bool:
-        return False
-    
-    async def _do_hunt(self):
-        logger.info("🎯 Hunting nearby animals")
-        
+    async def _execute_hunting(self):
+        """Execute hunting mode code"""
         try:
-            await self.send_immediate_command({
+            await self.ipc_server.send_command({
                 'type': 'execute_code',
                 'data': {
                     'code': """
@@ -750,12 +732,12 @@ class LowLevelBrain:
                 }
             })
             
-            await asyncio.sleep(2)
+            # Wait for execution result
+            await self._wait_for_execution_result()
             
         except asyncio.CancelledError:
-            logger.warning("⚠️ Hunting cancelled by higher priority action")
-            raise  # Re-raise to propagate cancellation
-            
+            logger.debug("Hunting execution cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error during hunting: {e}")
     
@@ -765,11 +747,12 @@ class LowLevelBrain:
         
         Waits 2 seconds after noticing an item before picking it up.
         """
-        if self.reflex_active or self.mode_active:
+        if self.reflex_active:
             return
         
-        is_executing = await self.shared_state.get('is_executing')
-        if is_executing:
+        # Check if bot is ready
+        bot_ready = await self.shared_state.get('bot_ready') or False
+        if not bot_ready:
             return
         
         collecting_enabled = self.modes_config.get('item_collecting', True)
@@ -781,62 +764,40 @@ class LowLevelBrain:
             # Check if we've noticed an item
             if self.item_noticed_at > 0:
                 if time.time() - self.item_noticed_at > self.item_wait_time:
-                    # Time to pick it up - 使用 ExecutionCoordinator
+                    # Time to pick it up - use ExecutionCoordinator
                     if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
                         result = await self.exec_coordinator.execute_action(
-                            layer='low_mode',
-                            label='mode:item_collecting',
-                            action_fn=lambda: self._collect_items(),
-                            can_interrupt=['low_reflex'],
-                            auto_resume=True
+                            layer='low_quick',  # Quick action - low priority, won't interrupt mid
+                            label='item_collecting',
+                            action_fn=lambda: self._execute_item_collecting(),
+                            can_interrupt=[],
+                            auto_resume=False
                         )
                         
-                        if result.get('cancelled'):
-                            logger.info("Item collecting was cancelled by higher priority action")
+                        if result.get('blocked'):
+                            # Higher priority task executing, reset timer
                             self.item_noticed_at = -1
                             return
                         
-                        if not result.get('blocked'):
-                            self.mode_active = True
-                    else:
-                        self.mode_active = True
-                        await self.ipc_server.send_command({
-                            'type': 'execute_code',
-                            'data': {
-                                'code': """
-                                    log(bot, 'Picking up item!');
-                                    await skills.pickupNearbyItems(bot);
-                                """
-                            }
-                        })
-                        self.mode_active = False
+                        if result.get('cancelled'):
+                            logger.debug("Item collecting cancelled")
+                            self.item_noticed_at = -1
+                            return
                     
                     self.item_noticed_at = -1
             else:
-                # Check for new items (non-blocking check, no mode_active)
-                await self.ipc_server.send_command({
-                    'type': 'execute_code',
-                    'data': {
-                        'code': """
-                            let item = world.getNearestEntityWhere(bot, entity => entity.name === 'item', 8);
-                            let empty_inv_slots = bot.inventory.emptySlotCount();
-                            if (item && await world.isClearPath(bot, item) && empty_inv_slots > 1) {
-                                // Signal Python to start wait timer
-                                return { noticed_item: true };
-                            }
-                            return { noticed_item: false };
-                        """
-                    }
-                })
+                # Check for new items (lightweight check, don't use ExecutionCoordinator)
+                # This is just observation, not action
+                # TODO: Implement item detection logic
+                pass
+                
         except Exception as e:
             logger.error(f"Item collecting check error: {e}")
-            self.mode_active = False
     
-    async def _collect_items(self):
-        logger.info("🎯 Collecting nearby items")
-        
+    async def _execute_item_collecting(self):
+        """Execute item collecting mode code"""
         try:
-            await self.send_immediate_command({
+            await self.ipc_server.send_command({
                 'type': 'execute_code',
                 'data': {
                     'code': """
@@ -846,14 +807,14 @@ class LowLevelBrain:
                 }
             })
             
-            await asyncio.sleep(1)
+            # Wait for execution result
+            await self._wait_for_execution_result()
             
         except asyncio.CancelledError:
-            logger.warning("⚠️ Item collecting cancelled by higher priority action")
-            raise  # Re-raise to propagate cancellation
-            
+            logger.debug("Item collecting execution cancelled")
+            raise
         except Exception as e:
-            logger.error(f"Error collecting items: {e}")
+            logger.error(f"Error during item collecting: {e}")
     
     async def check_torch_placing(self):
         """
@@ -865,8 +826,9 @@ class LowLevelBrain:
         if self.reflex_active:
             return
         
-        is_executing = await self.shared_state.get('is_executing')
-        if is_executing:
+        # Check if bot is ready
+        bot_ready = await self.shared_state.get('bot_ready') or False
+        if not bot_ready:
             return
         
         torch_enabled = self.modes_config.get('torch_placing', True)
@@ -876,6 +838,29 @@ class LowLevelBrain:
         if time.time() - self.last_torch_place < self.torch_cooldown:
             return
         
+        # Use ExecutionCoordinator to manage execution
+        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
+            result = await self.exec_coordinator.execute_action(
+                layer='low_auto',  # Autonomous mode - low priority, won't interrupt mid
+                label='torch_placing',
+                action_fn=lambda: self._execute_torch_placing(),
+                can_interrupt=[],
+                auto_resume=False
+            )
+            
+            if result.get('blocked'):
+                # Higher priority task executing, skip
+                return
+            
+            if result.get('cancelled'):
+                logger.debug("Torch placing cancelled")
+                return
+            
+            # Update cooldown after execution
+            self.last_torch_place = time.time()
+    
+    async def _execute_torch_placing(self):
+        """Execute torch placing mode code"""
         try:
             await self.ipc_server.send_command({
                 'type': 'execute_code',
@@ -888,9 +873,15 @@ class LowLevelBrain:
                     """
                 }
             })
-            self.last_torch_place = time.time()
+            
+            # Wait for execution result
+            await self._wait_for_execution_result()
+            
+        except asyncio.CancelledError:
+            logger.debug("Torch placing execution cancelled")
+            raise
         except Exception as e:
-            logger.error(f"Torch placing check error: {e}")
+            logger.error(f"Error during torch placing: {e}")
     
     async def check_elbow_room(self):
         """
@@ -899,21 +890,39 @@ class LowLevelBrain:
         Maintains minimum distance from other players when idle.
         Only executes when a player is actually too close.
         """
-        if self.reflex_active or self.mode_active:
+        if self.reflex_active:
             return
         
-        is_executing = await self.shared_state.get('is_executing')
-        if is_executing:
+        # Check if bot is ready
+        bot_ready = await self.shared_state.get('bot_ready') or False
+        if not bot_ready:
             return
         
         elbow_room_enabled = self.modes_config.get('elbow_room', True)
         if not elbow_room_enabled:
             return
         
-        try:
-            # Send command and mark mode as active
-            self.mode_active = True
+        # Use ExecutionCoordinator to manage execution
+        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
+            result = await self.exec_coordinator.execute_action(
+                layer='low_quick',  # Quick action - low priority, won't interrupt mid
+                label='elbow_room',
+                action_fn=lambda: self._execute_elbow_room(),
+                can_interrupt=[],
+                auto_resume=False
+            )
             
+            if result.get('blocked'):
+                # Higher priority task executing, skip silently
+                return
+            
+            if result.get('cancelled'):
+                logger.debug("Elbow room cancelled")
+                return
+    
+    async def _execute_elbow_room(self):
+        """Execute elbow room mode code"""
+        try:
             await self.ipc_server.send_command({
                 'type': 'execute_code',
                 'data': {
@@ -935,12 +944,15 @@ class LowLevelBrain:
                 }
             })
             
-            # Reset mode_active after execution completes
-            self.mode_active = False
+            # Wait for execution result
+            await self._wait_for_execution_result()
             
+        except asyncio.CancelledError:
+            logger.debug("Elbow room execution cancelled")
+            raise
         except Exception as e:
-            logger.error(f"Elbow room check error: {e}")
-            self.mode_active = False
+            logger.error(f"Error during elbow room: {e}")
+    
     async def check_idle_staring(self):
         """
         Idle staring mode: Look at nearby entities (ported from modes.js)
@@ -948,13 +960,6 @@ class LowLevelBrain:
         Animation to make the bot look more alive when idle.
         Uses bot.lookAt() which doesn't need execute() as it's non-blocking.
         """
-        if self.mode_active:
-            return
-            
-        is_executing = await self.shared_state.get('is_executing')
-        if is_executing:
-            return
-        
         staring_enabled = self.modes_config.get('idle_staring', True)
         if not staring_enabled:
             return
