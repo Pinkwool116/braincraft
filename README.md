@@ -122,14 +122,27 @@ cd ..\..
 
 #### 步骤 4: 配置 API 密钥
 
-编辑 **项目根目录**的 `keys.json`:
+在 **项目根目录**下创建 `keys.json`，填入你的 API 密钥:
 
 ```json
 {
-  "QWEN_API_KEY": "sk-your-qwen-key-here",
-  "OPENAI_API_KEY": "sk-your-openai-key-here",
-  "ANTHROPIC_API_KEY": "sk-your-claude-key-here",
-  "DEEPSEEK_API_KEY": "sk-your-deepseek-key-here"
+    "OPENAI_API_KEY": "",
+    "OPENAI_ORG_ID": "",
+    "GEMINI_API_KEY": "",
+    "ANTHROPIC_API_KEY": "",
+    "REPLICATE_API_KEY": "",
+    "GROQCLOUD_API_KEY": "",
+    "HUGGINGFACE_API_KEY": "",
+    "QWEN_API_KEY": "",
+    "XAI_API_KEY": "",
+    "MISTRAL_API_KEY": "",
+    "DEEPSEEK_API_KEY": "",
+    "GHLF_API_KEY": "",
+    "HYPERBOLIC_API_KEY": "",
+    "NOVITA_API_KEY": "",
+    "OPENROUTER_API_KEY": "",
+    "CEREBRAS_API_KEY": "",
+    "MERCURY_API_KEY": ""
 }
 ```
 
