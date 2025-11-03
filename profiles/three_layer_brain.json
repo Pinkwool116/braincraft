@@ -19,7 +19,7 @@
                 "top_p": 0.9
             },
             "interval_seconds": 600,
-            "system_prompt_file": "python/prompts/high_level_planning_prompt.txt"
+            "system_prompt_file": "agent/prompts/high_level_planning_prompt.txt"
         },
         "mid_level_brain": {
             "model_name": "qwen-plus",
@@ -30,7 +30,7 @@
                 "max_tokens": 4000,
                 "top_p": 0.9
             },
-            "system_prompt_file": "python/prompts/mid_level_coding_prompt.txt",
+            "system_prompt_file": "agent/prompts/mid_level_coding_prompt.txt",
             "interval_seconds": 1,
             "max_task_retries": 3
         },
