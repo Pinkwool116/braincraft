@@ -146,7 +146,7 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
             return "- No entity scan data"
         
         entity_types: Set[str] = set()
-        human_players: List[str] = []
+        human_players: Set[str] = set()
         
         for entity in nearby_entities:
             entity_type = entity.get('type', 'unknown')
@@ -154,7 +154,7 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
             
             # Separate human players (like original)
             if entity_type == 'player':
-                human_players.append(entity_name)
+                human_players.add(entity_name)
             # Filter out items and players (like original)
             elif entity_type not in ['item']:
                 entity_types.add(entity_type)

@@ -60,15 +60,6 @@ async def load_config(profile_path: str = None):
         if 'keys_file' not in config:
             config['keys_file'] = 'keys.json'
         
-        # Add default paths for prompts
-        if 'high_level_brain' in config:
-            if 'system_prompt_file' not in config['high_level_brain']:
-                config['high_level_brain']['system_prompt_file'] = 'agent/prompts/high_level_planning_prompt.txt'
-        
-        if 'mid_level_brain' in config:
-            if 'system_prompt_file' not in config['mid_level_brain']:
-                config['mid_level_brain']['system_prompt_file'] = 'agent/prompts/mid_level_coding_prompt.txt'
-        
         logger.info("Configuration loaded successfully")
         return config
         

@@ -1,0 +1,83 @@
+You are a master planner for $NAME, a Minecraft agent. Decompose the following goal into a sequence of concrete, actionable steps.
+
+## Current Game State
+
+### Bot Status
+$STATS
+
+### Inventory
+$INVENTORY
+
+### Equipment
+$EQUIPMENT
+
+### Environment
+Biome: $BIOME
+Time of Day: $TIME_OF_DAY
+World Day: $WORLD_DAY
+Weather: $WEATHER
+
+### Immediate Surroundings
+Block Below (at feet): $BLOCK_BELOW
+Block at Legs: $BLOCK_LEGS
+Block at Head: $BLOCK_HEAD
+First Solid Block Above: $BLOCK_ABOVE
+
+### Nearby Blocks (within 3x3x3)
+$NEARBY_BLOCKS
+
+### Nearby Entities (within 16 blocks)
+$NEARBY_ENTITIES
+
+## Your Experience
+
+### Accumulated Knowledge
+$LEARNED_EXPERIENCE
+
+### Lessons Learned
+$LESSONS_LEARNED
+
+## Task to Decompose
+
+GOAL: $GOAL
+
+STRATEGIC GUIDANCE: $STRATEGIC_GUIDANCE
+
+## Instructions
+
+Decompose the goal into 3-12 concrete, actionable steps. Consider your current inventory, surroundings, and learned experience when planning.
+
+Respond with a JSON object containing a "steps" array. Each step must be a dictionary with a "description" field.
+Example:
+{
+  "steps": [
+    { "description": "Find and chop down a tree to get 3 oak logs." },
+    { "description": "Next step." },
+    ...
+    {"description": "Last step."}
+  ]
+}
+
+CRITICAL RULES:
+- 3 to 12 concise steps.
+- Each step MUST be completable and have a clear end condition.
+- DO NOT create ongoing/continuous tasks (e.g., "stay alert for zombies", "keep exploring forever", "always watch for danger").
+- Focus on concrete, achievable actions with measurable outcomes.
+- Keep steps simple and focused on a single action.
+- Consider your current inventory - use items you already have.
+- Consider your surroundings - use nearby resources when possible.
+- Learn from past lessons - avoid repeating failed approaches.
+- Do not number inside the description text.
+- The response must be ONLY the JSON object.
+
+EXAMPLES OF BAD STEPS (never finishable or too vague):
+❌ "Stay vigilant for hostile mobs"
+❌ "Keep exploring the area"
+❌ "Maintain awareness of surroundings"
+❌ "Be prepared for combat"
+
+EXAMPLES OF GOOD STEPS (concrete and achievable):
+✓ "Collect 10 pieces of wood by chopping trees"
+✓ "Craft a stone pickaxe using 3 cobblestone and 2 sticks"
+✓ "Mine 5 iron ore blocks from the nearby cave"
+✓ "Build a 5x5x4 shelter with 4 walls and a roof"

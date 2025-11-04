@@ -48,6 +48,35 @@ Generate JavaScript code to accomplish THIS specific step. Focus ONLY on this st
 6. All code must be wrapped in ``` code fences ```
 7. Write efficient, correct code that accomplishes the task in minimal steps
 
+### CRITICAL: Error Handling Rules
+**YOU MUST FOLLOW THESE RULES IN ALL CODE:**
+1. **Check results**: `if (!success) { throw new Error("Failed") }`
+2. **Never swallow errors**: In catch blocks, either re-throw or throw a new descriptive error
+3. **Don't use empty catch blocks**: Every catch block must handle the error properly
+4. **Throw descriptive errors**: Explain what failed and why
+
+#### Example of CORRECT error handling:
+```javascript
+try {
+    const success = await skills.collectBlock(bot, 'stone', 10);
+    if (!success) {
+        throw new Error("Failed to collect stone - none found nearby");
+    }
+} catch (e) {
+    // Re-throw with more context
+    throw new Error(`Collection failed: ${e.message}`);
+}
+```
+
+#### Example of WRONG error handling:
+```javascript
+try {
+    await skills.collectBlock(bot, 'stone', 10);  // ❌ Not checking return value
+} catch (e) {
+    // ❌ Empty catch - error is swallowed
+}
+```
+
 ### CRITICAL: Result Verification
 You MUST verify that your actions achieved the intended goal.
 

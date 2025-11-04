@@ -1,0 +1,122 @@
+# Prompt Variable Configuration
+#
+# This file defines the mapping from prompt variables ($VARIABLE_NAME) to 
+# data provider functions in data_providers.py
+#
+# Format: VARIABLE_NAME: function_name
+# - VARIABLE_NAME: The placeholder used in prompt templates (e.g., $STATS)
+# - function_name: The corresponding function name in data_providers.py
+#
+# Special variables that are provided directly from context (not functions):
+# - TASK: Task description (provided by caller)
+# - GOAL: Goal description (provided by caller)
+# - PLAYER: Player name (provided by caller)
+# - MESSAGE: Chat message (provided by caller)
+# - ERROR_MESSAGE: Error message (provided by caller)
+# - RETRY_COUNT: Retry count (provided by caller)
+# - CODE_RULES: Code generation rules (provided by caller)
+# - CODE_DOCS: API documentation (provided by caller)
+
+# ========== Basic Game State ==========
+STATS: get_stats
+INVENTORY: get_inventory
+EQUIPMENT: get_equipment
+POSITION: get_position
+HEALTH: get_health
+FOOD: get_food
+BIOME: get_biome
+TIME_OF_DAY: get_time_of_day
+WORLD_DAY: get_world_day
+WEATHER: get_weather
+
+# ========== Surrounding Environment ==========
+BLOCK_BELOW: get_block_below
+BLOCK_LEGS: get_block_legs
+BLOCK_HEAD: get_block_head
+BLOCK_ABOVE: get_block_above
+NEARBY_BLOCKS: get_nearby_blocks
+NEARBY_ENTITIES: get_nearby_entities
+
+# ========== High-Level Brain Specific ==========
+MIND_CONTEXT: get_mind_context
+LEARNED_EXPERIENCE: get_learned_experience
+LESSONS_LEARNED: get_lessons_learned
+TASK_PLAN: get_task_plan
+
+# ========== Memory Related ==========
+PLAYERS_INFO: get_players_info
+PLAYER_INFO: get_player_info
+PLAYER_RELATIONSHIP: get_player_relationship
+MEMORY: get_recent_memories
+
+# ========== Auxiliary Information ==========
+TIMESTAMP: get_timestamp
+AGENT_AGE: get_agent_age
+INVENTORY_SUMMARY: get_inventory_summary
+NAME: get_agent_name
+AGENT_NAME: get_agent_name
+TASK_PLAN_CONTEXT: get_task_plan_context
+CODE_DOCS: get_code_docs
+
+# ========== Chat-Specific Variables ==========
+STRATEGIC_GOAL: get_strategic_goal
+TASK_STACK: get_task_stack_summary
+ACTIVE_TASK: get_active_task_summary
+RECENT_MEMORIES: get_recent_memories_chat
+PLAYER_INFO: get_player_info_summary
+PLAYER_OPINION: get_player_opinion
+CHAT_CONTEXT: get_chat_context
+
+# ========== Special Direct Values ==========
+# These are NOT functions - passed directly as lowercase keys in context.
+# They are resolved at Priority 1 (before function providers).
+# 
+# Template Variable -> Context Key (lowercase)
+# 
+# Chat & Communication:
+#   $MESSAGE -> context['message']
+#   $PLAYER_NAME -> context['player_name']
+#   $BOT_RESPONSE -> context['bot_response']
+# 
+# Task & Goal:
+#   $TASK -> context['task']
+#   $GOAL -> context['goal']
+#   $STRATEGIC_GUIDANCE -> context['strategic_guidance']
+#   $EXAMPLES -> context['examples']
+# 
+# Task Decomposition & Handling:
+#   $STEP_DESCRIPTION -> context['step_description']
+#   $STEP_INDEX -> context['step_index']
+#   $FAILURE_LIST -> context['failure_list']
+#   $FAILED_STEP_DESCRIPTION -> context['failed_step_description']
+#   $REASON -> context['reason']
+#   $SUGGESTION -> context['suggestion']
+# 
+# Task Stack Context:
+#   $STACK_SUMMARY -> context['stack_summary']
+#   $CURRENT_PLAN_TEXT -> context['current_plan_text']
+#   $CURRENT_TASK_TEXT -> context['current_task_text']
+#   $TASK_SOURCE -> context['task_source']
+#   $RECENT_MEMORY_TEXT -> context['recent_memory_text']
+#   $PLAYER_CONTEXT -> context['player_context']
+# 
+# Player Directive Handling:
+#   $DIRECTIVE -> context['directive']
+#   $RELATIONSHIP -> context['relationship']
+#   $TRUST_LEVEL -> context['trust_level']
+#   $PERSONALITY -> context['personality']
+#   $PREFERENCES -> context['preferences']
+# 
+# Experience Summary (future feature - not currently used):
+#   $RECENT_ACTIONS -> context['recent_actions']
+#   $SUCCESSES -> context['successes']
+#   $FAILURES -> context['failures']
+#   $START_BIOME -> context['start_biome']
+#   $END_BIOME -> context['end_biome']
+#   $DURATION -> context['duration']
+# 
+# Note: PromptManager resolution priority:
+#   1. Direct context values (context['key'])
+#   2. Manually registered providers (backward compatibility)
+#   3. Config-mapped providers (this YAML file)
+

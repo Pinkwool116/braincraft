@@ -2,6 +2,7 @@
     "agent_name": "BrainyBot",
     "ipc_port": 9000,
     "keys_file": "keys.json",
+    "enable_prompt_logging": false,
     "three_layer_brain_llm": {
         "description": "Configuration for three-layer brain LLM models - Using Qwen by default",
         "_config_notes": {

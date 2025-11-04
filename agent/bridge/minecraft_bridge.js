@@ -210,15 +210,18 @@ class BrainBridge {
             };
 
             // Wrap code in async function (same as original Coder)
+            // Important: We need to return the Promise so errors can be caught
             const wrappedCode = `
-                (async function(bot, skills, world, goals, Vec3, log) {
+                return (async function(bot, skills, world, goals, Vec3, log) {
                     ${code}
                 })(context.bot, context.skills, context.world, context.goals, context.Vec3, context.log);
             `;
 
-            // Execute code
+            // Execute code and properly await the returned Promise
+            // This ensures errors thrown inside the async function are caught
             // console.log('Starting code execution...');  // Too verbose for modes
-            await eval(wrappedCode);
+            const executeFunction = new Function('context', wrappedCode);
+            await executeFunction(context);
             // console.log('Code execution completed');  // Too verbose for modes
 
             // Check if code was interrupted
@@ -294,7 +297,6 @@ class BrainBridge {
                     message: `Execution failed: ${error.message}\nOutput before error: ${code_output}`
                 }
             });
-            return Promise.reject(error); // Propagate failure
         } finally {
             // Clean up
             this.bot.output = '';
@@ -626,7 +628,7 @@ class BrainBridge {
             .filter(e => e.position.distanceTo(this.bot.entity.position) < 16)
             .map(e => ({
                 type: e.type,
-                name: e.name,
+                name: e.type === 'player' ? e.username : e.name,
                 position: e.position,
                 health: e.metadata[7]
             }));
@@ -792,52 +794,16 @@ class BrainBridge {
             console.log(`Agent age: ${ageDays} game days, ${ageHours} hours (${this.totalTicksPlayed} total ticks)`);
             console.log(`Current world: Day ${this.bot.time.day}, Time of day: ${this.lastTimeOfDay}`);
 
-            // Update playtime every 5 seconds using timeOfDay
-            // timeOfDay: 0-23999 (resets daily)
-            this.playtimeInterval = setInterval(() => {
-                if (!this.bot || !this.connected) return;
+            this.bot.on('physicsTick', () => {
+                this.totalTicksPlayed++;
 
-                const currentTimeOfDay = this.bot.time.timeOfDay;
-
-                // Skip first check if lastTimeOfDay is null
-                if (this.lastTimeOfDay === null) {
-                    this.lastTimeOfDay = currentTimeOfDay;
-                    console.log(`[Playtime] Starting time tracking at ${currentTimeOfDay} ticks`);
-                    return;
+                // Auto-save every 1 minutes (1200 ticks)
+                if (this.totalTicksPlayed % 1200 === 0) {
+                    this.savePlaytime();
+                    const ageDays = Math.floor(this.totalTicksPlayed / 24000);
+                    console.log(`[Playtime] Auto-saved: ${this.totalTicksPlayed} ticks (${ageDays} days)`);
                 }
-
-                // Calculate ticks elapsed
-                let ticksElapsed = currentTimeOfDay - this.lastTimeOfDay;
-
-                // If negative, day changed (timeOfDay wrapped from 23999 to 0)
-                if (ticksElapsed < 0) {
-                    ticksElapsed += 24000;
-                    console.log(`[Playtime] Day changed, adjusted ticks: ${ticksElapsed}`);
-                }
-
-                // Sanity check: max 5 seconds * 20 ticks/sec = 100 ticks
-                if (ticksElapsed > 0 && ticksElapsed < 150) {
-                    this.totalTicksPlayed += ticksElapsed;
-                    this.lastTimeOfDay = currentTimeOfDay;
-
-                    if (ticksElapsed > 10) {
-                        console.log(`[Playtime] Updated: ${this.totalTicksPlayed} total ticks (+${ticksElapsed})`);
-                    }
-
-                    // Save every minute (~1200 ticks) OR if this is the first time
-                    const shouldSave = this.totalTicksPlayed === ticksElapsed || // First update
-                        Math.floor(this.totalTicksPlayed / 1200) !== Math.floor((this.totalTicksPlayed - ticksElapsed) / 1200);
-
-                    if (shouldSave) {
-                        this.savePlaytime();
-                        const ageDays = Math.floor(this.totalTicksPlayed / 24000);
-                        console.log(`[Playtime] Auto-saved: ${ageDays} game days (${this.totalTicksPlayed} ticks)`);
-                    }
-                } else if (ticksElapsed >= 150) {
-                    console.log(`[Playtime] WARNING: Ticks elapsed too large (${ticksElapsed}), ignoring to prevent time jump`);
-                }
-                // Removed the "No ticks elapsed" log to reduce spam when time is paused
-            }, 5000); // Check every 5 seconds
+            });
 
             // Start state update loop
             setInterval(() => this.sendStateUpdate(), 1000);

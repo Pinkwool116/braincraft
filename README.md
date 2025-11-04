@@ -450,6 +450,92 @@ node agent\bridge\minecraft_bridge.js
 
 确保 Ollama 已启动并下载了模型。
 
+## 提示词模板系统
+
+### 系统架构
+
+BrainCraft 使用**模板化提示词系统**，支持动态变量替换和模块化组织：
+
+- **PromptManager**: 提示词渲染引擎，负责加载模板并替换变量
+- **DataProviders**: 数据提供者，为变量提供动态数据（如游戏状态、记忆等）
+- **PromptLogger**: 调试工具，记录所有发送给 LLM 的提示词和响应
+- **variable_config.yaml**: 变量配置文件，定义所有可用变量及其数据来源
+
+### 提示词目录结构
+
+```
+agent/prompts/
+├── high_level/              # 高层大脑提示词
+│   ├── planning.txt         # 战略规划（目标设定、任务栈决策）
+│   └── experience_summary.txt  # 经验总结（学习和反思）
+├── mid_level/               # 中层大脑提示词
+│   ├── coding.txt           # 代码生成（JavaScript 代码）
+│   ├── chat_handler.txt     # 聊天处理（响应玩家消息）
+│   └── extract_player_info.txt  # 玩家信息提取（关系管理）
+├── task_stack/              # 任务栈提示词
+│   ├── task_decomposition.txt    # 任务分解（目标→步骤）
+│   ├── handle_stuck_task.txt     # 处理卡住的任务（故障排查）
+│   └── handle_player_directive.txt  # 处理玩家指令（接受/拒绝决策）
+├── prompt_manager.py        # 提示词管理器
+├── data_providers.py        # 数据提供者
+├── prompt_logger.py         # 提示词日志记录器
+└── variable_config.yaml     # 变量配置文件
+```
+
+### 变量系统
+
+提示词中可以使用 `$VARIABLE_NAME` 格式的变量，在渲染时自动替换：
+
+#### 游戏状态变量
+- `$STATS`: 位置、生命值、饥饿度、经验等级
+- `$INVENTORY`: 背包物品详情
+- `$NEARBY_BLOCKS`: 附近 16 格内的方块
+- `$NEARBY_ENTITIES`: 附近的实体（玩家、生物）
+- `$TIME_OF_DAY`: 游戏时间和天数
+
+#### 记忆变量
+- `$SHORT_TERM_MEMORY`: 最近的重要事件（最后 50 条）
+- `$LEARNED_EXPERIENCE`: 长期学习经验和洞察
+- `$PLAYER_RELATIONSHIPS`: 玩家关系信息
+- `$CHAT_CONTEXT`: 聊天历史（特定玩家）
+
+#### 技能文档
+- `$CODE_DOCS`: Minecraft 技能库完整 API 文档
+- `$SKILL_SUMMARY`: 技能库概览（简化版）
+
+#### 任务相关
+- `$ACTIVE_TASK`: 当前执行的任务计划
+- `$TASK_STACK`: 完整任务栈状态
+- `$CURRENT_GOAL`: 当前战略目标
+
+### 自定义提示词
+
+#### 修改现有提示词
+
+直接编辑 `agent/prompts/` 目录下的 `.txt` 文件即可，修改后立即生效（无需重启）。
+
+#### 添加新变量
+
+1. 在 `data_providers.py` 中添加数据提供者函数：
+   ```python
+   @staticmethod
+   def get_custom_data(context: Dict[str, Any]) -> str:
+       """自定义数据提供者"""
+       return "your custom data"
+   ```
+
+2. 在 `variable_config.yaml` 中注册变量：
+   ```yaml
+   CUSTOM_VAR:
+     provider: get_custom_data
+     description: "Your custom variable description"
+   ```
+
+3. 在提示词中使用：
+   ```
+   Current custom data: $CUSTOM_VAR
+   ```
+
 ## 任务栈工作原理
 
 ### 任务栈结构
@@ -589,18 +675,29 @@ braincraft/
 │   │   ├── mind_state_manager.py  # 心智状态管理
 │   │   ├── chat_manager.py        # 聊天管理
 │   │   ├── game_state_formatter.py # 游戏状态格式化
-│   │   ├── prompt_loader.py       # 提示词加载
 │   │   └── logger.py              # 日志系统
 │   ├── communication/             # 通信模块
 │   │   └── ipc_server.py          # IPC 服务器
 │   ├── bridge/                    # JS-Python 桥接
 │   │   ├── minecraft_bridge.js    # Minecraft 桥接
 │   │   └── package.json           # 桥接依赖
-│   └── prompts/                   # LLM 提示词
-│       ├── high_level_planning_prompt.txt  # 高层规划提示
-│       ├── mid_level_coding_prompt.txt     # 中层代码生成提示
-│       ├── chat_prompt.txt                 # 聊天提示
-│       └── experience_summary_prompt.txt   # 经验总结提示
+│   └── prompts/                   # LLM 提示词模板系统
+│       ├── prompt_manager.py      # 提示词管理器（渲染引擎）
+│       ├── prompt_logger.py       # 提示词日志记录器（调试工具）
+│       ├── data_providers.py      # 数据提供者（变量解析器）
+│       ├── api_docs_generator.py  # API 文档生成器
+│       ├── variable_config.yaml   # 变量配置文件
+│       ├── high_level/            # 高层大脑提示词
+│       │   ├── planning.txt       # 战略规划
+│       │   └── experience_summary.txt  # 经验总结
+│       ├── mid_level/             # 中层大脑提示词
+│       │   ├── coding.txt         # 代码生成
+│       │   ├── chat_handler.txt   # 聊天处理
+│       │   └── extract_player_info.txt  # 玩家信息提取
+│       └── task_stack/            # 任务栈提示词
+│           ├── task_decomposition.txt    # 任务分解
+│           ├── handle_stuck_task.txt     # 处理卡住的任务
+│           └── handle_player_directive.txt  # 处理玩家指令
 ├── bots/                          # 智能体数据（运行时生成）
 │   └── BrainyBot/                 # 对应 agent_name
 │       ├── mind_state.json        # 心智状态

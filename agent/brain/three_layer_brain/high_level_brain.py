@@ -10,12 +10,12 @@ Responsible for:
 
 import asyncio
 import logging
-from copy import deepcopy
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 from utils.memory_manager import MemoryManager
 from utils.mind_state_manager import MindStateManager
-from utils.prompt_loader import load_system_prompt
+from prompts.prompt_logger import PromptLogger
+from prompts.prompt_manager import PromptManager
 from brain.mind_system.goal_hierarchy import GoalHierarchy
 from brain.mind_system.self_awareness import SelfAwareness
 from brain.mind_system.mental_state import MentalState
@@ -48,11 +48,15 @@ class HighLevelBrain:
         self.memory_manager = MemoryManager(agent_name)
         self.mind_state_manager = MindStateManager(agent_name)
         
+        # Initialize Prompt Logger for debugging (controlled by config)
+        enable_logging = config.get('enable_prompt_logging', False)
+        self.prompt_logger = PromptLogger('bots', agent_name, enabled=enable_logging)
+        
         # Initialize Task Stack Components
         self.task_persistence = TaskPersistence(self.mind_state_manager)
         self.task_stack_manager = TaskStackManager(self.shared_state, self.task_persistence)
-        self.task_planner = TaskPlanner(self.llm, self.memory_manager, self.shared_state)
-        self.task_handler = TaskHandler(self.llm, self.task_stack_manager, self.task_planner, self.memory_manager)
+        self.task_planner = TaskPlanner(self.llm, self.memory_manager, self.shared_state, self.prompt_logger)
+        self.task_handler = TaskHandler(self.llm, self.task_stack_manager, self.task_planner, self.memory_manager, self.prompt_logger)
 
         # Heart & Mind Systems
         self.goal_hierarchy = GoalHierarchy(shared_state)
@@ -65,7 +69,8 @@ class HighLevelBrain:
             self.goal_hierarchy
         )
         
-        self.system_prompt = load_system_prompt(config, 'high_level_brain')
+        # Initialize PromptManager 
+        self.prompt_manager = PromptManager()
         
         self._load_persisted_state()
         
@@ -117,25 +122,12 @@ class HighLevelBrain:
                 await self._idle_think()
             
             # Step 4: Periodically save mind state
-            self._save_persisted_state()
+            await self._save_persisted_state()
             
         except Exception as e:
             logger.error(f"Error in high-level thinking cycle: {e}", exc_info=True)
         
         logger.info("High-level brain: Thinking cycle complete")
-    
-    def get_learned_experience_base(self) -> str:
-        """
-        Get accumulated learned experience from persistent storage.
-        """
-        learned_exp = self.memory_manager.get_learned_experience_summary(
-            max_insights=5,
-            max_lessons=10
-        )
-        players_info = self.memory_manager.get_all_players_summary()
-        if players_info and players_info != "No players known yet.":
-            learned_exp += "\n\n" + players_info
-        return learned_exp if learned_exp else "No learned experience yet."
     
     async def _generate_strategic_plan(self) -> Dict[str, Any]:
         """
@@ -143,50 +135,38 @@ class HighLevelBrain:
         """
         logger.debug("Generating strategic plan with LLM...")
         state = await self.shared_state.get_all()
-        
-        prompt = self.system_prompt
         agent_name = await self.self_awareness.get_name()
         
-        # Use GameStateFormatter to populate environment placeholders
-        from utils.game_state_formatter import GameStateFormatter
-        prompt = GameStateFormatter.populate_prompt_placeholders(prompt, state, agent_name)
-        
-        # Replace high-level specific placeholders
-        prompt = prompt.replace('$MIND_CONTEXT', await self.get_mind_context_for_prompt())
-        prompt = prompt.replace('$LEARNED_EXPERIENCE', self.get_learned_experience_base())
-        prompt = prompt.replace('$TASK_PLAN', self.task_stack_manager.generate_task_stack_summary())
-        
-        # Replace memory/player info placeholders
-        import datetime
-        prompt = prompt.replace('$TIMESTAMP', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-        
-        # Get player info summary
-        players_info = self.memory_manager.get_all_players_summary()
-        prompt = prompt.replace('$PLAYERS_INFO', players_info if players_info else "No players encountered yet.")
-        
-        # Get recent memories
-        recent_memory_entries = self.memory_manager.get_recent_memories(count=5)
-        if recent_memory_entries:
-            memory_lines = []
-            for entry in recent_memory_entries:
-                event_type = entry.get('type', 'event')
-                content = entry.get('content', '')
-                memory_lines.append(f"- [{event_type}] {content}")
-            memory_summary = "\n".join(memory_lines)
-        else:
-            memory_summary = "No recent memories."
-        prompt = prompt.replace('$MEMORY', memory_summary)
-        
-        # Inventory summary
-        inventory = state.get('inventory', {})
-        if inventory:
-            inv_summary = ', '.join([f"{name}: {count}" for name, count in sorted(inventory.items())])
-        else:
-            inv_summary = "Empty inventory"
-        prompt = prompt.replace('$INVENTORY_SUMMARY', inv_summary)
+        # Use PromptManager to render the planning prompt (v2.0 - config-driven)
+        prompt = await self.prompt_manager.render(
+            'high_level/planning.txt',
+            context={
+                'state': state,
+                'agent_name': agent_name,
+                'memory_manager': self.memory_manager,
+                'task_stack_manager': self.task_stack_manager,
+                'self_awareness': self.self_awareness,
+            }
+        )
 
         try:
+            # Log prompt before sending
+            prompt_file = self.prompt_logger.log_prompt(
+                prompt=prompt,
+                brain_layer="high",
+                prompt_type="strategic_planning",
+                metadata={
+                    "agent_name": agent_name,
+                    "current_goal": state.get('strategic_goal', 'N/A')
+                }
+            )
+            logger.debug(f"Prompt saved to: {prompt_file}")
+            
             response = await self.llm.send_request([], prompt)
+            
+            # Update with response
+            self.prompt_logger.update_response(prompt_file, response)
+            
             plan = self.task_planner._parse_llm_json(response)
             logger.info(f"Strategic plan: {plan.get('goal_priority', 'N/A')}")
             return plan or {}
@@ -248,23 +228,21 @@ class HighLevelBrain:
                 
                 # Restore strategic_goal to SharedState
                 if 'strategic_goal' in data:
-                    import asyncio
                     asyncio.create_task(self.shared_state.update('strategic_goal', data['strategic_goal']))
                 
                 logger.info("Loaded persisted mind state")
             else:
                 logger.info("No mind_state.json found - initializing with default state")
-                self._save_persisted_state()
+                # Schedule async save in the event loop
+                asyncio.create_task(self._save_persisted_state())
         except Exception as e:
             logger.error(f"Failed to load mind state: {e}")
     
-    def _save_persisted_state(self):
+    async def _save_persisted_state(self):
         """Save mind state to disk using MindStateManager."""
         try:
-            # Get strategic_goal from SharedState (synchronous workaround)
-            import asyncio
-            loop = asyncio.get_event_loop()
-            strategic_goal = loop.run_until_complete(self.shared_state.get('strategic_goal'))
+            # Get strategic_goal from SharedState
+            strategic_goal = await self.shared_state.get('strategic_goal')
             
             data = {
                 'goal_hierarchy': self.goal_hierarchy.to_dict(),
@@ -291,7 +269,7 @@ class HighLevelBrain:
     async def save_state(self):
         """Public method to save all brain state."""
         logger.info("Saving high-level brain state...")
-        self._save_persisted_state()
+        await self._save_persisted_state()
         self.memory_manager._save_json(
             self.memory_manager.players_file,
             self.memory_manager.players
