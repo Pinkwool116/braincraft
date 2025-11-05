@@ -17,7 +17,7 @@ class TaskPlanner:
         self.shared_state = shared_state
         self.prompt_logger = prompt_logger  # Optional prompt logger
         
-        # Initialize PromptManager (v2.0 - no registration needed!)
+        # Initialize PromptManager
         self.prompt_manager = PromptManager()
 
     async def decompose_goal_to_steps(self, goal: str, strategic_guidance: str, source: str, player_name: Optional[str]) -> Optional[Dict[str, Any]]:

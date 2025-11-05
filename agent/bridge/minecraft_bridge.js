@@ -98,7 +98,6 @@ class BrainBridge {
         for await (const [msg] of this.subSocket) {
             try {
                 const command = JSON.parse(msg.toString());
-                // 🔥 Remove await to enable concurrent command handling
                 this.handleCommand(command);
             } catch (error) {
                 console.error('Error handling command:', error);
@@ -117,8 +116,11 @@ class BrainBridge {
         switch (type) {
             case 'execute_code':
                 // Execute code in background, don't block other commands
-                // Pass priority flag if provided (for low-level mode checks)
-                this.executeCodeInBackground(data.code, data.priority || 'normal');
+                this.executeCodeInBackground(
+                    data.code,
+                    data.no_response || false,
+                    data.priority || 'normal'
+                );
                 break;
 
             case 'set_interrupt_flag':
@@ -156,22 +158,24 @@ class BrainBridge {
         }
     }
 
-    executeCodeInBackground(code) {
+    executeCodeInBackground(code, no_response = false) {
         // ExecutionCoordinator now manages concurrency at Python level
         // JavaScript just executes what Python sends
 
         // Start new code execution (non-blocking)
-        this.codeExecutionPromise = this.executeCode(code)
+        this.codeExecutionPromise = this.executeCode(code, no_response)
             .catch(err => {
                 console.error('Background code execution error:', err);
-                // Send error result to Python
-                this.sendMessage({
-                    type: 'execution_result',
-                    data: {
-                        success: false,
-                        message: err.message || 'Code execution error'
-                    }
-                });
+                // Only send error if response is expected
+                if (!no_response) {
+                    this.sendMessage({
+                        type: 'execution_result',
+                        data: {
+                            success: false,
+                            message: err.message || 'Code execution error'
+                        }
+                    });
+                }
             })
             .finally(() => {
                 this.codeExecutionPromise = null;
@@ -179,7 +183,7 @@ class BrainBridge {
         // Function returns immediately, code runs in background
     }
 
-    async executeCode(code) {
+    async executeCode(code, no_response = false) {
         // console.log('Executing generated code...');  // Too verbose for modes
         // console.log('Code:', code);  // Too verbose for modes
 
@@ -229,15 +233,18 @@ class BrainBridge {
                 // Code was interrupted by chat - mark task as failed
                 const code_output = this.bot.output || 'No output';
 
-                await this.sendMessage({
-                    type: 'execution_result',
-                    data: {
-                        success: false,
-                        interrupted: true,
-                        output: code_output,
-                        message: `Task interrupted by chat message. No need to summarize, just try again. Output: ${code_output}`
-                    }
-                });
+                // Only send result if response is expected
+                if (!no_response) {
+                    await this.sendMessage({
+                        type: 'execution_result',
+                        data: {
+                            success: false,
+                            interrupted: true,
+                            output: code_output,
+                            message: `Task interrupted by chat message. No need to summarize, just try again. Output: ${code_output}`
+                        }
+                    });
+                }
 
                 console.log('⚠️ Code execution interrupted by chat');
                 return;
@@ -262,18 +269,21 @@ class BrainBridge {
                 inventory_changed: JSON.stringify(stateBefore.inventory) !== JSON.stringify(stateAfter.inventory)
             };
 
-            // Send detailed result back to Python
-            await this.sendMessage({
-                type: 'execution_result',
-                data: {
-                    success: true,
-                    output: code_output,
-                    state_before: stateBefore,
-                    state_after: stateAfter,
-                    changes: changes,
-                    message: `Code executed successfully. Output: ${code_output}`
-                }
-            });
+            // Only send result if response is expected (mid-level brain waits for this)
+            // Low-level brain uses no_response=true to avoid interfering
+            if (!no_response) {
+                await this.sendMessage({
+                    type: 'execution_result',
+                    data: {
+                        success: true,
+                        output: code_output,
+                        state_before: stateBefore,
+                        state_after: stateAfter,
+                        changes: changes,
+                        message: `Code executed successfully. Output: ${code_output}`
+                    }
+                });
+            }
 
             // Only log if there's meaningful output or changes
             if (code_output !== 'No output' || Object.values(changes).some(c => c)) {
@@ -287,16 +297,19 @@ class BrainBridge {
             // Get any output that was generated before the error
             const code_output = this.bot.output || 'No output before error';
 
-            await this.sendMessage({
-                type: 'execution_result',
-                data: {
-                    success: false,
-                    error: error.message,
-                    error_stack: error.stack,
-                    output: code_output,
-                    message: `Execution failed: ${error.message}\nOutput before error: ${code_output}`
-                }
-            });
+            // Only send error if response is expected
+            if (!no_response) {
+                await this.sendMessage({
+                    type: 'execution_result',
+                    data: {
+                        success: false,
+                        error: error.message,
+                        error_stack: error.stack,
+                        output: code_output,
+                        message: `Execution failed: ${error.message}\nOutput before error: ${code_output}`
+                    }
+                });
+            }
         } finally {
             // Clean up
             this.bot.output = '';

@@ -298,7 +298,8 @@ class LowLevelBrain:
                             } else {
                                 await skills.moveAway(bot, 5);
                             }
-                        """
+                        """,
+                        'no_response': True
                     }
                 })
             
@@ -323,7 +324,8 @@ class LowLevelBrain:
             await self.ipc_server.send_command({
                 'type': 'execute_code',
                 'data': {
-                    'code': 'bot.setControlState("jump", true);'
+                    'code': 'bot.setControlState("jump", true);',
+                    'no_response': True
                 }
             })
             
@@ -396,7 +398,7 @@ class LowLevelBrain:
         
         logger.debug(f"Execution result: {result.get('success')}")
     
-    async def _wait_for_execution_result(self, timeout: float = 30.0):
+    async def _wait_for_execution_result(self, timeout: float = 30.0, expect_response: bool = True):
         """
         Wait for execution result from JavaScript
         
@@ -406,8 +408,11 @@ class LowLevelBrain:
         Returns:
             Execution result dictionary
         """
-        # Clear previous result
-        await self.shared_state.update('last_execution_result', None)
+        # Only clear previous result when the caller expects a response.
+        # Low-level fire-and-forget calls use no_response=True and should
+        # not clear or wait for a result (to avoid clobbering mid-level results).
+        if expect_response:
+            await self.shared_state.update('last_execution_result', None)
         
         start_time = asyncio.get_event_loop().time()
         poll_interval = 0.1
@@ -581,7 +586,6 @@ class LowLevelBrain:
         # (fire, drowning, etc. are detected in reflex_controller.js)
     
     async def _escape_low_health(self, health: float):
-        """执行低血量逃跑动作"""
         logger.warning(f"⚠️ Low health reflex: {health}/20 - Escaping!")
         
         try:
@@ -669,7 +673,8 @@ class LowLevelBrain:
                             log(bot, `Aaa! A ${enemy.name.replace("_", " ")}!`);
                             await skills.avoidEnemies(bot, 24);
                         }
-                    """
+                    """,
+                    'no_response': True
                 }
             })
         except Exception as e:
@@ -727,12 +732,13 @@ class LowLevelBrain:
                             log(bot, `Hunting ${huntable.name}!`);
                             await skills.attackEntity(bot, huntable);
                         }
-                    """
+                    """,
+                    'no_response': True
                 }
             })
             
-            # Wait for execution result
-            await self._wait_for_execution_result()
+            # Wait for execution result (we sent no_response=True so do not expect one)
+            await self._wait_for_execution_result(expect_response=False)
             
         except asyncio.CancelledError:
             logger.debug("Hunting execution cancelled")
@@ -802,12 +808,13 @@ class LowLevelBrain:
                     'code': """
                         log(bot, 'Picking up item!');
                         await skills.pickupNearbyItems(bot);
-                    """
+                    """,
+                    'no_response': True
                 }
             })
             
-            # Wait for execution result
-            await self._wait_for_execution_result()
+            # Wait for execution result (we sent no_response=True so do not expect one)
+            await self._wait_for_execution_result(expect_response=False)
             
         except asyncio.CancelledError:
             logger.debug("Item collecting execution cancelled")
@@ -869,12 +876,13 @@ class LowLevelBrain:
                             const pos = bot.entity.position;
                             await skills.placeBlock(bot, 'torch', pos.x, pos.y, pos.z, 'bottom', true);
                         }
-                    """
+                    """,
+                    'no_response': True
                 }
             })
             
-            # Wait for execution result
-            await self._wait_for_execution_result()
+            # Wait for execution result (we sent no_response=True so do not expect one)
+            await self._wait_for_execution_result(expect_response=False)
             
         except asyncio.CancelledError:
             logger.debug("Torch placing execution cancelled")
@@ -939,12 +947,13 @@ class LowLevelBrain:
                                 await skills.moveAwayFromEntity(bot, player, 0.5);
                             }
                         }
-                    """
+                    """,
+                    'no_response': True
                 }
             })
             
-            # Wait for execution result
-            await self._wait_for_execution_result()
+            # Wait for execution result (we sent no_response=True so do not expect one)
+            await self._wait_for_execution_result(expect_response=False)
             
         except asyncio.CancelledError:
             logger.debug("Elbow room execution cancelled")
@@ -980,7 +989,8 @@ class LowLevelBrain:
                                 const yaw = Math.random() * Math.PI * 2;
                                 const pitch = (Math.random() * Math.PI/2) - Math.PI/4;
                                 bot.look(yaw, pitch, false);
-                            """
+                            """,
+                            'no_response': True
                         }
                     })
                 
@@ -1002,7 +1012,8 @@ class LowLevelBrain:
                                 let height = isbaby ? entity.height/2 : entity.height;
                                 bot.lookAt(entity.position.offset(0, height, 0));
                             }
-                        """
+                        """,
+                        'no_response': True
                     }
                 })
         except Exception as e:
