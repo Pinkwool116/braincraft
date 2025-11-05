@@ -85,6 +85,7 @@ class MidLevelBrain:
         # Bot ready state tracking (to avoid spam)
         self._waiting_for_bot = False
         self._last_waiting_log_time = 0
+        self._last_bot_status = None
         
         self.prompt_manager = PromptManager()
         
@@ -151,19 +152,34 @@ class MidLevelBrain:
         if not bot_ready:
             import time
             current_time = time.time()
+            bot_status = await self.shared_state.get('bot_status') or 'connecting'
+            # Log when status changes, and then rate-limit periodic reminders
+            if self._last_bot_status != bot_status:
+                if bot_status == 'dead':
+                    logger.warning("Bot died - waiting for respawn...")
+                elif bot_status == 'reconnecting':
+                    logger.warning("Bot disconnected - waiting for reconnection...")
+                else:
+                    logger.warning("Bot not in game yet - waiting for bot to spawn...")
+                self._last_bot_status = bot_status
             
             if not self._waiting_for_bot:
-                logger.warning("Bot not in game yet - waiting for bot to spawn...")
                 self._waiting_for_bot = True
                 self._last_waiting_log_time = current_time
             elif current_time - self._last_waiting_log_time > 300:
-                logger.info(f"Still waiting for bot to spawn...")
+                if bot_status == 'dead':
+                    logger.info("Still waiting: bot respawn...")
+                elif bot_status == 'reconnecting':
+                    logger.info("Still waiting: bot reconnection...")
+                else:
+                    logger.info("Still waiting for bot to spawn...")
                 self._last_waiting_log_time = current_time
             return
         
         if self._waiting_for_bot:
             logger.info("Bot spawned! Continuing task execution")
             self._waiting_for_bot = False
+            self._last_bot_status = 'online'
         
         # Log execution AFTER confirming bot is ready
         logger.info(f"Executing task plan step {current_step_index + 1}/{len(steps)}: {current_step['description']}")
@@ -495,7 +511,6 @@ class MidLevelBrain:
                 # Generate code using LLM
                 response = await self.llm.send_request([], prompt)
                 
-                # 🎯 Update with response
                 self.prompt_logger.update_response(prompt_file, response)
                 
                 # Check if response contains code
@@ -826,9 +841,6 @@ class MidLevelBrain:
                 
                 # Wait before next check
                 await asyncio.sleep(poll_interval)
-                
-                # Wait a bit before checking again (this is a cancellation point)
-                await asyncio.sleep(0.1)
         
         except asyncio.CancelledError:
             # Task was cancelled by higher priority action (e.g., low health reflex)

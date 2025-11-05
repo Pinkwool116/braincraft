@@ -65,10 +65,10 @@ async def load_config(profile_path: str = None):
         
     except FileNotFoundError:
         logger.error(f"Configuration file not found: {profile_path}")
-        raise
+        sys.exit(1)
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in configuration file: {e}")
-        raise
+        sys.exit(1)
 
 async def main():
     """Main entry point for the Three-Layer Brain system"""
@@ -78,6 +78,9 @@ async def main():
     logger.info("=" * 70)
     logger.info("  MindCraft Three-Layer Brain System")
     logger.info("=" * 70)
+    
+    ipc_server = None
+    coordinator = None
     
     try:
         # Load configuration
@@ -98,39 +101,41 @@ async def main():
         logger.info("Initializing brain coordinator...")
         coordinator = BrainCoordinator(ipc_server, config)
         
-        # Start the coordinator (this will run indefinitely)
+        # Start the coordinator (this will run until shutdown_requested is set)
         logger.info("=" * 70)
         logger.info("  Brain systems starting...")
         logger.info("=" * 70)
         await coordinator.start()
         
+        # If we reach here, shutdown was requested (all brain loops exited)
+        logger.info("Brain systems stopped. Cleaning up...")
+        
     except KeyboardInterrupt:
         logger.info("\n" + "=" * 70)
-        logger.info("  Shutdown requested by user")
+        logger.info("  Shutdown requested by user (Ctrl+C)")
         logger.info("=" * 70)
         
-        # Graceful shutdown
-        try:
-            # Notify JavaScript to disconnect bot
-            await ipc_server.send_command({
-                'type': 'shutdown',
-                'data': {'reason': 'User requested shutdown'}
-            })
-            await asyncio.sleep(1)  # Give JS time to process
-            
-            # Shutdown coordinator (saves state)
+        # Set shutdown flag and cancel all tasks IMMEDIATELY
+        if coordinator:
+            coordinator.shutdown_requested = True
+            logger.info("Cancelling all brain tasks...")
+            await coordinator.cancel_all_tasks()
+            logger.info("Saving brain state...")
             await coordinator.shutdown()
-            
-            # Close IPC server
-            await ipc_server.stop()
-            
-        except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-            
+        
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         raise
+        
     finally:
+        # Always close IPC server on exit
+        if ipc_server:
+            try:
+                logger.info("Closing IPC server...")
+                await ipc_server.stop()
+            except Exception as e:
+                logger.error(f"Error closing IPC server: {e}")
+        
         logger.info("Shutdown complete")
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Brain Coordinator
 Coordinates the three-layer brain system with asynchronous execution.
 """
 
+import sys
 import asyncio
 import logging
 from typing import Dict, Any
@@ -76,6 +77,10 @@ class SharedState:
             
             # Interrupt mechanism (like original project)
             'interrupt_code': False,  # Flag for interrupting JavaScript code execution
+
+            # Bot connection/status
+            'bot_ready': False,
+            'bot_status': 'connecting',  # connecting | online | dead | reconnecting
         }
         self._lock = asyncio.Lock()
     
@@ -138,6 +143,9 @@ class BrainCoordinator:
         
         # Event for waking high-level brain immediately
         self.high_brain_wake_event = asyncio.Event()
+        
+        # Shutdown flag
+        self.shutdown_requested = False
         
         # Create execution coordinator
         self.exec_coordinator = ExecutionCoordinator(
@@ -246,6 +254,7 @@ class BrainCoordinator:
             
             # Update bot ready state
             await self.shared_state.update('bot_ready', True)
+            await self.shared_state.update('bot_status', 'online')
             
             # Record birthday (world day when agent first spawned)
             birthday = data.get('birthday')
@@ -256,8 +265,9 @@ class BrainCoordinator:
                 logger.info(f"Agent birthday: World day {birthday} (tick {birthday_ticks})")
             
             # Log current world time and agent age
-            current_day = data.get('current_day', 0)
-            current_ticks = data.get('current_ticks', 0)
+            # Backward/forward compatible field names
+            current_day = data.get('current_day', data.get('world_day', 0))
+            current_ticks = data.get('current_ticks', data.get('world_ticks', 0))
             age_days = current_day - birthday if birthday is not None else 0
             
             logger.info(f"Current world: Day {current_day}, Tick {current_ticks}")
@@ -295,6 +305,8 @@ class BrainCoordinator:
             """Handle death event (informational)"""
             logger.warning("⚠️  Agent died!")
             await self.shared_state.update('health', 0)
+            await self.shared_state.update('bot_status', 'dead')
+            await self.shared_state.update('bot_ready', False)
             return {'status': 'ok'}
         
         async def handle_bot_disconnected(data):
@@ -302,15 +314,31 @@ class BrainCoordinator:
             reason = data.get('reason', 'Unknown')
             logger.warning(f"🔌 Bot disconnected: {reason}")
             await self.shared_state.update('bot_ready', False)
+            await self.shared_state.update('bot_status', 'reconnecting')
             # Clear execution state to stop tasks
             await self.shared_state.update('is_executing', False)
             return {'status': 'ok'}
+        
+        async def handle_shutdown(data):
+            """Handle shutdown request from JavaScript bridge"""
+            reason = data.get('reason', 'Unknown')
+            logger.warning(f"🛑 Shutdown requested: {reason}")
+            
+            # Set shutdown flag to stop all brain loops
+            self.shutdown_requested = True
+            
+            # Cancel all brain tasks immediately
+            asyncio.create_task(self.cancel_all_tasks())
+            
+            # Return response immediately so JS knows we received the message
+            return {'status': 'ok', 'message': 'Shutdown initiated'}
         
         self.ipc_server.register_handler('combat_engaged', handle_combat_engaged)
         self.ipc_server.register_handler('low_health', handle_low_health)
         self.ipc_server.register_handler('damage_taken', handle_damage_taken)
         self.ipc_server.register_handler('death', handle_death)
         self.ipc_server.register_handler('bot_disconnected', handle_bot_disconnected)
+        self.ipc_server.register_handler('shutdown', handle_shutdown)
         
         logger.info("IPC message handlers registered")
     
@@ -348,6 +376,7 @@ class BrainCoordinator:
                     
             except Exception as e:
                 logger.warning(f"Failed to load keys from {keys_file}: {e}")
+                sys.exit(1)
     
     async def start(self):
         """
@@ -357,13 +386,35 @@ class BrainCoordinator:
         """
         logger.info("Starting three-layer brain system...")
         
-        # Start all three layers concurrently
-        await asyncio.gather(
-            self._run_high_brain(),
-            self._run_mid_brain(),
-            self._run_low_brain(),
-            return_exceptions=True
-        )
+        # Create tasks for all three brain layers
+        self.high_task = asyncio.create_task(self._run_high_brain())
+        self.mid_task = asyncio.create_task(self._run_mid_brain())
+        self.low_task = asyncio.create_task(self._run_low_brain())
+        
+        # Store tasks for cancellation
+        self.brain_tasks = [self.high_task, self.mid_task, self.low_task]
+        
+        # Wait for all tasks to complete (or be cancelled)
+        try:
+            await asyncio.gather(
+                self.high_task,
+                self.mid_task,
+                self.low_task,
+                return_exceptions=True
+            )
+        except asyncio.CancelledError:
+            logger.info("Brain coordinator tasks cancelled")
+    
+    async def cancel_all_tasks(self):
+        """Cancel all running brain tasks"""
+        logger.info("Cancelling all brain tasks...")
+        for task in self.brain_tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for all tasks to be cancelled
+        await asyncio.gather(*self.brain_tasks, return_exceptions=True)
+        logger.info("All brain tasks cancelled")
     
     async def _run_high_brain(self):
         """
@@ -378,39 +429,46 @@ class BrainCoordinator:
         
         first_run = True
         
-        while True:
-            try:
-                # First run: wait for bot to be ready
-                if first_run:
-                    logger.info("⏰ High-level brain waiting for bot to be ready...")
-                    while not self.high_brain_initialized:
-                        await asyncio.sleep(0.1)  # Check every 100ms
-                    first_run = False
-                    logger.info("✅ Bot ready, executing initial high-level brain cycle...")
-                    await self.high_brain.think(woken_by_event=False)
-                    continue
-                
-                # Wait for either periodic interval OR immediate wake event
+        try:
+            while not self.shutdown_requested:
                 try:
-                    await asyncio.wait_for(
-                        self.high_brain_wake_event.wait(),
-                        timeout=contemplation_interval
-                    )
-                    # Event was set - immediate wake
-                    self.high_brain_wake_event.clear()
-                    logger.info("⚡ High-level brain woken by event")
-                    await self.high_brain.think(woken_by_event=True)
-                except asyncio.TimeoutError:
-                    # Timeout reached - periodic wake
-                    logger.info("⏰ High-level periodic wake")
-                    await self.high_brain.think(woken_by_event=False)
-                
-            except asyncio.CancelledError:
-                logger.info("High-level brain cancelled")
-                raise
-            except Exception as e:
-                logger.error(f"High-level brain error: {e}", exc_info=True)
-                await asyncio.sleep(1)  # Brief pause before retry
+                    # First run: wait for bot to be ready
+                    if first_run:
+                        logger.info("⏰ High-level brain waiting for bot to be ready...")
+                        while not self.high_brain_initialized and not self.shutdown_requested:
+                            await asyncio.sleep(0.1)  # Check every 100ms
+                        if self.shutdown_requested:
+                            break
+                        first_run = False
+                        logger.info("✅ Bot ready, executing initial high-level brain cycle...")
+                        await self.high_brain.think(woken_by_event=False)
+                        continue
+                    
+                    # Wait for either periodic interval OR immediate wake event
+                    try:
+                        await asyncio.wait_for(
+                            self.high_brain_wake_event.wait(),
+                            timeout=contemplation_interval
+                        )
+                        # Event was set - immediate wake
+                        self.high_brain_wake_event.clear()
+                        logger.info("⚡ High-level brain woken by event")
+                        await self.high_brain.think(woken_by_event=True)
+                    except asyncio.TimeoutError:
+                        # Timeout reached - periodic wake
+                        logger.info("⏰ High-level periodic wake")
+                        await self.high_brain.think(woken_by_event=False)
+                    
+                except asyncio.CancelledError:
+                    logger.info("High-level brain cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"High-level brain error: {e}", exc_info=True)
+                    await asyncio.sleep(1)  # Brief pause before retry
+        except asyncio.CancelledError:
+            logger.info("High-level brain task cancelled during shutdown")
+        
+        logger.info("High-level brain stopped")
     
     async def _run_mid_brain(self):
         """
@@ -421,7 +479,7 @@ class BrainCoordinator:
         interval = self.config.get('mid_level_brain', {}).get('interval_seconds', 1)
         logger.info(f"Mid-level brain started (interval: {interval}s)")
         
-        while True:
+        while not self.shutdown_requested:
             try:
                 await self.mid_brain.process()
             except Exception as e:
@@ -429,6 +487,8 @@ class BrainCoordinator:
             
             # Wait before next iteration
             await asyncio.sleep(interval)
+        
+        logger.info("Mid-level brain stopped")
     
     async def _run_low_brain(self):
         """
@@ -439,7 +499,7 @@ class BrainCoordinator:
         interval = self.config.get('low_level_brain', {}).get('interval_seconds', 0.1)
         logger.info(f"Low-level brain started (interval: {interval}s)")
         
-        while True:
+        while not self.shutdown_requested:
             try:
                 await self.low_brain.handle_events()
             except Exception as e:
@@ -447,6 +507,8 @@ class BrainCoordinator:
             
             # Very short interval for real-time responses
             await asyncio.sleep(interval)
+        
+        logger.info("Low-level brain stopped")
     
     async def shutdown(self):
         """Graceful shutdown of all brain systems"""

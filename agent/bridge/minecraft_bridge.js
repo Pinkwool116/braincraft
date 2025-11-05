@@ -59,6 +59,7 @@ class BrainBridge {
         this.config = config;  // Store config reference
         this.pythonPort = config.ipc_port || 9000;
         this.connected = false;
+        this.isBotReady = false; // Track whether bot is spawned and ready
 
         // Message queue to prevent REQ socket EBUSY errors
         this.messageQueue = [];
@@ -71,6 +72,9 @@ class BrainBridge {
 
         // Track background code execution (for concurrent command handling)
         this.codeExecutionPromise = null;
+
+        // Interval handles
+        this.stateUpdateInterval = null;
     }
 
     async initIPC() {
@@ -187,7 +191,29 @@ class BrainBridge {
         // console.log('Executing generated code...');  // Too verbose for modes
         // console.log('Code:', code);  // Too verbose for modes
 
+        // Predeclare abort-related variables so we can clean them up in finally
+        let onDeath = null;
+        let onEnd = null;
+        let onKicked = null;
+        let cleanup = null;
+        let cleanedUp = false;
+
         try {
+            // Guard: bot must be ready/spawned
+            if (!this.bot || !this.isBotReady) {
+                const msg = this.bot ? 'Bot is not ready (not spawned or respawning)' : 'Bot instance not initialized';
+                if (!no_response) {
+                    await this.sendMessage({
+                        type: 'execution_result',
+                        data: {
+                            success: false,
+                            message: msg
+                        }
+                    });
+                }
+                return;
+            }
+
             // Initialize bot.output for logging (similar to original agent)
             this.bot.output = '';
 
@@ -221,11 +247,45 @@ class BrainBridge {
                 })(context.bot, context.skills, context.world, context.goals, context.Vec3, context.log);
             `;
 
-            // Execute code and properly await the returned Promise
-            // This ensures errors thrown inside the async function are caught
-            // console.log('Starting code execution...');  // Too verbose for modes
+            // Prepare abort guards for death/disconnect/kicked
+            cleanup = () => {
+                if (cleanedUp) return;
+                cleanedUp = true;
+                try { if (onDeath) this.bot.removeListener('death', onDeath); } catch { }
+                try { if (onEnd) this.bot.removeListener('end', onEnd); } catch { }
+                try { if (onKicked) this.bot.removeListener('kicked', onKicked); } catch { }
+            };
+
+            onDeath = () => {
+                try { this.bot.interrupt_code = true; this.bot.pathfinder?.setGoal(null); } catch { }
+                // Reject execution on death so Python can resume after respawn
+                throwDeath(new Error('Bot died during execution'));
+            };
+            onEnd = (reason) => {
+                try { this.bot.interrupt_code = true; this.bot.pathfinder?.setGoal(null); } catch { }
+                throwEnd(new Error(`Bot disconnected during execution: ${reason || 'unknown'}`));
+            };
+            onKicked = (reason) => {
+                try { this.bot.interrupt_code = true; this.bot.pathfinder?.setGoal(null); } catch { }
+                throwKicked(new Error(`Bot kicked during execution: ${reason || 'unknown'}`));
+            };
+
+            // We need deferred rejectors to be used inside listeners
+            let throwDeath, throwEnd, throwKicked;
+            const abortPromise = new Promise((_, reject) => {
+                throwDeath = reject;
+                throwEnd = reject;
+                throwKicked = reject;
+            });
+
+            this.bot.once('death', onDeath);
+            this.bot.once('end', onEnd);
+            this.bot.once('kicked', onKicked);
+
+            // Execute code and properly await the returned Promise, but race with aborts
             const executeFunction = new Function('context', wrappedCode);
-            await executeFunction(context);
+            await Promise.race([executeFunction(context), abortPromise]);
+            cleanup();
             // console.log('Code execution completed');  // Too verbose for modes
 
             // Check if code was interrupted
@@ -311,6 +371,7 @@ class BrainBridge {
                 });
             }
         } finally {
+            if (cleanup && !cleanedUp) cleanup();
             // Clean up
             this.bot.output = '';
         }
@@ -369,6 +430,7 @@ class BrainBridge {
         const { action, params } = data;
 
         try {
+            if (!this.bot || !this.isBotReady) return;
             switch (action) {
                 case 'combat':
                     // Auto-attack nearest enemy
@@ -401,6 +463,7 @@ class BrainBridge {
         const { skill, params } = data;
 
         try {
+            if (!this.bot || !this.isBotReady) return;
             // Check if skill exists in skills module
             if (typeof skills[skill] !== 'function') {
                 console.error(`Skill not found: ${skill}`);
@@ -486,6 +549,7 @@ class BrainBridge {
         /**
          * Gracefully shutdown the bot
          * - Save playtime
+         * - Notify Python (if disconnection initiated from JS side)
          * - Disconnect from server
          * - Exit process
          */
@@ -725,6 +789,8 @@ class BrainBridge {
         console.log(`Auth: ${options.auth}, Version: ${options.version || 'auto-detect'}`);
 
         this.bot = createBot(options);
+        this.isBotReady = false;
+        this.spawnInitialized = false; // one-time init guard for per-session setup
 
         // Add modes stub for skills.js compatibility immediately after bot creation
         // (Original project uses modes system, we don't need it but skills.js expects it)
@@ -760,35 +826,57 @@ class BrainBridge {
     }
 
     setupEventHandlers() {
-        // Spawn event (bot enters world)
-        this.bot.once('spawn', async () => {
+        // Spawn event (bot enters world). Use 'on' to handle respawn as well.
+        const handleSpawn = async () => {
             console.log('Bot spawned in world');
+            this.isBotReady = true;
 
             // Initialize interrupt_code flag (for real-time code interruption)
             this.bot.interrupt_code = false;
 
-            // Initialize mcdata for world functions (CRITICAL!)
-            // This must be done after spawn when bot.version is available
-            await mcdata.init(this.bot);
+            // One-time initialization per bot session
+            if (!this.spawnInitialized) {
+                // Initialize mcdata for world functions (CRITICAL!)
+                // This must be done after spawn when bot.version is available
+                await mcdata.init(this.bot);
 
-            // Setup pathfinder (original project logic)
-            const minecraftData = (await import('minecraft-data')).default;
-            const mcData = minecraftData(this.bot.version);
-            const defaultMove = new Movements(this.bot, mcData);
-            this.bot.pathfinder.setMovements(defaultMove);
+                // Setup pathfinder (original project logic)
+                const minecraftData = (await import('minecraft-data')).default;
+                const mcData = minecraftData(this.bot.version);
+                const defaultMove = new Movements(this.bot, mcData);
+                this.bot.pathfinder.setMovements(defaultMove);
 
-            // Load cumulative playtime (age = total ticks / 24000)
-            await this.loadPlaytime();
+                // Load cumulative playtime (age = total ticks / 24000)
+                await this.loadPlaytime();
 
-            // Initialize lastTimeOfDay to current time
-            this.lastTimeOfDay = this.bot.time.timeOfDay;
-            console.log(`Session started at time of day: ${this.lastTimeOfDay}`);
+                // Initialize lastTimeOfDay to current time
+                this.lastTimeOfDay = this.bot.time.timeOfDay;
+                console.log(`Session started at time of day: ${this.lastTimeOfDay}`);
 
-            // Calculate current age
+                // Physics tick listener (once per session)
+                this.bot.on('physicsTick', () => {
+                    this.totalTicksPlayed++;
+
+                    // Auto-save every 1 minutes (1200 ticks)
+                    if (this.totalTicksPlayed % 1200 === 0) {
+                        this.savePlaytime();
+                        const ageDays = Math.floor(this.totalTicksPlayed / 24000);
+                        console.log(`[Playtime] Auto-saved: ${this.totalTicksPlayed} ticks (${ageDays} days)`);
+                    }
+                });
+
+                // Start state update loop (store handle for cleanup)
+                if (this.stateUpdateInterval) clearInterval(this.stateUpdateInterval);
+                this.stateUpdateInterval = setInterval(() => this.sendStateUpdate(), 1000);
+
+                this.spawnInitialized = true;
+            }
+
+            // Calculate current age for status message
             const ageDays = Math.floor(this.totalTicksPlayed / 24000);
             const ageHours = Math.floor((this.totalTicksPlayed % 24000) / 1000);
 
-            // Notify Python brain that bot is ready
+            // Notify Python brain that bot is ready (on every spawn, including respawn)
             await this.sendMessage({
                 type: 'bot_ready',
                 data: {
@@ -806,21 +894,9 @@ class BrainBridge {
             console.log('Bot ready notification sent to Python brain');
             console.log(`Agent age: ${ageDays} game days, ${ageHours} hours (${this.totalTicksPlayed} total ticks)`);
             console.log(`Current world: Day ${this.bot.time.day}, Time of day: ${this.lastTimeOfDay}`);
+        };
 
-            this.bot.on('physicsTick', () => {
-                this.totalTicksPlayed++;
-
-                // Auto-save every 1 minutes (1200 ticks)
-                if (this.totalTicksPlayed % 1200 === 0) {
-                    this.savePlaytime();
-                    const ageDays = Math.floor(this.totalTicksPlayed / 24000);
-                    console.log(`[Playtime] Auto-saved: ${this.totalTicksPlayed} ticks (${ageDays} days)`);
-                }
-            });
-
-            // Start state update loop
-            setInterval(() => this.sendStateUpdate(), 1000);
-        });
+        this.bot.on('spawn', handleSpawn);
 
         // Chat event
         this.bot.on('chat', async (username, message) => {
@@ -866,6 +942,7 @@ class BrainBridge {
         // Death event
         this.bot.on('death', () => {
             console.log('Bot died!');
+            this.isBotReady = false; // Temporarily not ready during death/respawn
             this.sendMessage({
                 type: 'death',
                 data: { timestamp: Date.now() }
@@ -887,46 +964,57 @@ class BrainBridge {
         // Disconnect handling (original project logic)
         this.bot.on('end', async (reason) => {
             console.warn('Bot disconnected!', reason);
+            this.isBotReady = false;
 
-            // Stop playtime update interval
-            if (this.playtimeInterval) {
-                clearInterval(this.playtimeInterval);
-                this.playtimeInterval = null;
+            // Stop state update interval
+            if (this.stateUpdateInterval) {
+                clearInterval(this.stateUpdateInterval);
+                this.stateUpdateInterval = null;
             }
 
-            // Notify Python brain that bot disconnected
+            // Notify Python brain to shutdown gracefully
             try {
                 await this.sendMessage({
-                    type: 'bot_disconnected',
+                    type: 'shutdown',
                     data: {
-                        reason: reason || 'Unknown',
+                        reason: `Bot disconnected: ${reason || 'Unknown'}`,
                         timestamp: Date.now()
                     }
                 });
+                console.log('Shutdown signal sent to Python brain');
             } catch (err) {
-                console.error('Failed to notify Python about disconnect:', err.message);
+                console.error('Failed to notify Python about shutdown:', err.message);
             }
 
-            // Don't save on disconnect - losing a few seconds of age is fine
-            // (Auto-save already happens every minute)
-
-            // Auto-reconnect after 5 seconds
-            console.log('\n  Bot disconnected. Attempting to reconnect in 5 seconds...');
-            setTimeout(async () => {
-                console.log('Attempting to reconnect...');
-                try {
-                    await this.initBot();
-                    console.log('Reconnected successfully!');
-                } catch (err) {
-                    console.error('Failed to reconnect:', err.message);
-                    console.log('Please restart manually.');
-                }
-            }, 5000);
+            // Use the unified graceful shutdown
+            await this.gracefulShutdown(`Bot disconnected: ${reason || 'Unknown'}`);
         });        // Kicked event (original project logic)
-        this.bot.on('kicked', (reason) => {
+        this.bot.on('kicked', async (reason) => {
             console.warn('Bot was kicked:', reason);
-            console.error('\n Bot was kicked from server!');
-            console.error('   Reason:', reason);
+            this.isBotReady = false;
+
+            // Stop state update interval
+            if (this.stateUpdateInterval) {
+                clearInterval(this.stateUpdateInterval);
+                this.stateUpdateInterval = null;
+            }
+
+            // Notify Python brain to shutdown gracefully
+            try {
+                await this.sendMessage({
+                    type: 'shutdown',
+                    data: {
+                        reason: `Bot was kicked: ${reason || 'Unknown'}`,
+                        timestamp: Date.now()
+                    }
+                });
+                console.log('Shutdown signal sent to Python brain');
+            } catch (err) {
+                console.error('Failed to notify Python about shutdown:', err.message);
+            }
+
+            // Use the unified graceful shutdown
+            await this.gracefulShutdown(`Bot was kicked: ${reason || 'Unknown'}`);
         });
 
         // Entity hurt tracking
@@ -1054,14 +1142,17 @@ class BrainBridge {
         console.log('='.repeat(70));
 
         try {
-            // Initialize bot first
+            // Connect to Python brain first
+            await this.initIPC();
+
+            // Then initialize bot
             await this.initBot();
 
-            // Wait for spawn
-            await new Promise(resolve => this.bot.once('spawn', resolve));
+            // Setup process signal handlers for graceful shutdown
+            this.setupProcessHandlers();
 
-            // Then connect to Python
-            await this.initIPC();
+            // Wait for the first spawn to complete one-time setups
+            await new Promise(resolve => this.bot.once('spawn', resolve));
 
             // Start idle behavior (looking around, staring at entities)
             this.startIdleBehavior();
@@ -1077,6 +1168,46 @@ class BrainBridge {
             console.error('Failed to start bridge:', error);
             process.exit(1);
         }
+    }
+
+    setupProcessHandlers() {
+        /**
+         * Setup process-level signal handlers for graceful shutdown
+         * This ensures we notify Python when user presses Ctrl+C
+         */
+        const handleShutdown = async (signal) => {
+            console.log(`\nReceived ${signal}, initiating graceful shutdown...`);
+
+            // Try to notify Python (with timeout)
+            try {
+                const shutdownPromise = this.sendMessage({
+                    type: 'shutdown',
+                    data: {
+                        reason: `User pressed ${signal}`,
+                        timestamp: Date.now()
+                    }
+                });
+
+                // Wait max 1 second for response
+                await Promise.race([
+                    shutdownPromise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1000))
+                ]).catch(() => {
+                    console.log('Could not notify Python (timeout)');
+                });
+            } catch (err) {
+                console.log('Could not notify Python:', err.message);
+            }
+
+            // Perform graceful shutdown
+            await this.gracefulShutdown(`User pressed ${signal}`);
+        };
+
+        // Handle Ctrl+C (SIGINT)
+        process.on('SIGINT', () => handleShutdown('SIGINT'));
+
+        // Handle termination signal (SIGTERM)
+        process.on('SIGTERM', () => handleShutdown('SIGTERM'));
     }
 }
 
