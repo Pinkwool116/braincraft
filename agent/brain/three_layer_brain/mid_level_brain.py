@@ -17,8 +17,8 @@ from typing import Dict, Any, List, Optional
 import asyncio
 import logging
 from datetime import datetime
-from utils.memory_manager import MemoryManager
-from utils.chat_manager import ChatManager
+from data_manager.memory_manager import MemoryManager
+from data_manager.chat_manager import ChatManager
 from prompts.prompt_logger import PromptLogger
 from prompts.prompt_manager import PromptManager
 
@@ -72,7 +72,7 @@ class MidLevelBrain:
         self.prompt_logger = PromptLogger('bots', agent_name, enabled=enable_logging)
         
         # Skill library (create once and reuse)
-        from models.skill_library import SkillLibrary
+        from minecraft.skill_library import SkillLibrary
         self.skill_lib = SkillLibrary()
         
         # Execution state

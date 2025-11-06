@@ -5,9 +5,6 @@ This is the entry point for the three-layer asynchronous brain architecture:
 - High-Level Brain: Strategic planning and experience summarization (every 5 minutes)
 - Mid-Level Brain: Tactical execution and task management (every second)
 - Low-Level Brain: Reflex system for immediate responses (every 100ms)
-
-Author: AI Town Team
-Date: 2025-10-28
 """
 
 import asyncio
@@ -23,7 +20,7 @@ if sys.platform == 'win32':
 sys.path.insert(0, str(Path(__file__).parent))
 
 from brain.three_layer_brain.brain_coordinator import BrainCoordinator
-from communication.ipc_server import IPCServer
+from bridge.ipc_server import IPCServer
 from utils.logger import setup_logger
 
 async def load_config(profile_path: str = None):

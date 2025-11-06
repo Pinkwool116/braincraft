@@ -12,8 +12,8 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
-from utils.memory_manager import MemoryManager
-from utils.mind_state_manager import MindStateManager
+from data_manager.memory_manager import MemoryManager
+from data_manager.mind_state_manager import MindStateManager
 from prompts.prompt_logger import PromptLogger
 from prompts.prompt_manager import PromptManager
 from brain.mind_system.goal_hierarchy import GoalHierarchy

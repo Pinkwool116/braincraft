@@ -12,7 +12,7 @@ from .high_level_brain import HighLevelBrain
 from .mid_level_brain import MidLevelBrain
 from .low_level_brain import LowLevelBrain
 from .execution_coordinator import ExecutionCoordinator
-from models.llm_wrapper import create_llm_model
+from llm.llm_wrapper import create_llm_model
 
 logger = logging.getLogger(__name__)
 
