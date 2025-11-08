@@ -23,12 +23,12 @@
             "system_prompt_file": "agent/prompts/high_level_planning_prompt.txt"
         },
         "mid_level_brain": {
-            "model_name": "qwen-plus",
+            "model_name": "qwen-max",
             "api": "qwen",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "params": {
                 "temperature": 0.5,
-                "max_tokens": 4000,
+                "max_tokens": 8000,
                 "top_p": 0.9
             },
             "system_prompt_file": "agent/prompts/mid_level_coding_prompt.txt",

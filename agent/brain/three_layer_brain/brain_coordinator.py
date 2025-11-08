@@ -160,6 +160,12 @@ class BrainCoordinator:
         self.mid_brain.exec_coordinator = self.exec_coordinator
         self.low_brain.exec_coordinator = self.exec_coordinator
         
+        # Pass chat_manager from mid_brain to high_brain's task_handler
+        if hasattr(self.mid_brain, 'chat_manager'):
+            self.high_brain.task_handler.chat_manager = self.mid_brain.chat_manager
+        else:
+            logger.warning("Mid-level brain has no chat_manager to pass to high-level brain")
+        
         logger.info("Brain coordinator initialized with ExecutionCoordinator")
         
         # Register IPC message handlers

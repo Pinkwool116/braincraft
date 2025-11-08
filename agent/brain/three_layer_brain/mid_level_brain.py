@@ -67,7 +67,7 @@ class MidLevelBrain:
         # Chat manager for chat history persistence
         self.chat_manager = ChatManager(agent_name)
         
-        # Prompt logger for debugging (controlled by config)
+        # Prompt logger for debugging
         enable_logging = config.get('enable_prompt_logging', False)
         self.prompt_logger = PromptLogger('bots', agent_name, enabled=enable_logging)
         
@@ -92,7 +92,7 @@ class MidLevelBrain:
         # Configuration
         self.max_retries = config.get('mid_level_brain', {}).get('max_task_retries', 3)
         
-        logger.info("Mid-level brain initialized (simplified version with single LLM)")
+        logger.info("Mid-level brain initialized")
     
     async def process(self):
         """
@@ -136,7 +136,7 @@ class MidLevelBrain:
             return
         
         current_step_index = task_plan.get('current_step_index', -1)
-        steps = task_plan.get('steps', [])
+        steps = task_plan.get('steps', []) 
         
         if current_step_index < 0 or current_step_index >= len(steps):
             return
@@ -193,7 +193,7 @@ class MidLevelBrain:
         await self.shared_state.update('is_executing', True)  # Sync to shared state
         
         try:
-            success = await self._execute_step_with_retry(current_step, current_step_index)
+            success = await self._execute_step_with_retry(current_step)
             
             if success:
                 # Step succeeded
@@ -254,7 +254,7 @@ class MidLevelBrain:
 
         await self.high_brain.update_active_task_step(step_index, status, failure_reason)
     
-    async def _execute_step_with_retry(self, step: Dict[str, Any], step_index: int, max_attempts: int = 5) -> bool:
+    async def _execute_step_with_retry(self, step: Dict[str, Any], max_attempts: int = 5) -> bool:
         """
         Execute a step with retry mechanism (similar to self-prompter)
         
@@ -557,14 +557,11 @@ class MidLevelBrain:
                     })
                     continue
                 
-                # Inject interrupt checks into code (like original project)
+                # Inject interrupt checks into code
                 code = self._inject_interrupt_checks(code)
                 
                 # Send code to JavaScript for execution
                 result = await self._send_code_to_javascript(code)
-                
-                # Refresh game state AFTER code execution
-                # This ensures next attempt or step has accurate state
                 await self._refresh_game_state()
                 
                 # Check execution result
@@ -754,8 +751,6 @@ class MidLevelBrain:
         # Replace semicolon + newline with interrupt check
         # This ensures every statement is followed by an interrupt check
         injected_code = code.replace(';\n', '; if(bot.interrupt_code) {log(bot, "Code interrupted.");return;}\n')
-        
-        # Also handle semicolons at end of code
         if injected_code.endswith(';'):
             injected_code += ' if(bot.interrupt_code) {log(bot, "Code interrupted.");return;}'
         
@@ -878,7 +873,12 @@ class MidLevelBrain:
                 await self._send_chat_response(chat_result['message'], player)
                 # Store chat history
                 self.chat_manager.add_chat(player, message, chat_result['message'])
-                await self._extract_player_info_from_chat(player, message, chat_result['message'])
+                
+                # Update player description if provided
+                player_description = chat_result.get('update_player_description')
+                if player_description and isinstance(player_description, str) and player_description.strip():
+                    self.memory.update_player_description(player, player_description)
+                    logger.info(f"Updated player description for {player}")
             
             task_desc = chat_result.get('task')
             logger.debug(f"Task field value: {repr(task_desc)}, type: {type(task_desc)}")
@@ -929,6 +929,7 @@ class MidLevelBrain:
                     'memory_manager': self.memory,
                     'chat_manager': self.chat_manager,
                     'agent_name': self.config.get('agent_name', 'BrainyBot'),
+                    'player': player,
                     'player_name': player,
                     'message': message
                 }
@@ -972,8 +973,10 @@ class MidLevelBrain:
                 result['message'] = "I'm not sure how to respond to that."
             if 'task' not in result:
                 result['task'] = None
+            if 'update_player_description' not in result:
+                result['update_player_description'] = None
             
-            logger.info(f"Parsed chat result: message='{result['message'][:50]}...', task={repr(result['task'])}")
+            logger.info(f"Parsed chat result: message='{result['message'][:50]}...', task={repr(result['task'])}, player_update={bool(result['update_player_description'])}")
             
             return result
             
@@ -1012,61 +1015,6 @@ class MidLevelBrain:
             })
         except Exception as e:
             logger.error(f"Error sending chat: {e}")
-    
-    async def _extract_player_info_from_chat(self, player: str, message: str, bot_response: str):
-        """
-        Extract and store player information from chat
-        
-        Args:
-            player: Player name
-            message: Player's message
-            bot_response: Bot's response
-        """
-        # Use PromptManager to render player info extraction prompt
-        prompt = await self.prompt_manager.render(
-            'mid_level/extract_player_info.txt',
-            context={
-                'player_name': player,
-                'message': message,
-                'bot_response': bot_response
-            }
-        )
-        
-        try:
-            # Log prompt before sending
-            prompt_file = self.prompt_logger.log_prompt(
-                prompt=prompt,
-                brain_layer="mid",
-                prompt_type="extract_player_info",
-                metadata={
-                    "player_name": player,
-                    "message": message
-                }
-            )
-            logger.debug(f"Player info extraction prompt saved to: {prompt_file}")
-            
-            analysis = await self.llm.send_request([], prompt)
-            
-            # Update with response
-            self.prompt_logger.update_response(prompt_file, analysis)
-            
-            analysis = analysis.strip().lower()
-            
-            if analysis != "none" and len(analysis) > 3:
-                # Extract information type
-                if any(word in analysis for word in ['friendly', 'impatient', 'curious', 'helpful', 'aggressive']):
-                    self.memory.update_player_info(player, 'personality', analysis)
-                    logger.info(f"Learned about {player}'s personality: {analysis}")
-                elif any(word in analysis for word in ['likes', 'prefers', 'enjoys', 'wants', 'dislikes']):
-                    self.memory.update_player_info(player, 'preference', analysis)
-                    logger.info(f"Learned about {player}'s preferences: {analysis}")
-                else:
-                    self.memory.update_player_info(player, 'interaction', analysis)
-                
-                logger.info(f"Stored player information for {player}")
-        
-        except Exception as e:
-            logger.debug(f"Error extracting player info: {e}")
     
     async def _refresh_game_state(self):
         """

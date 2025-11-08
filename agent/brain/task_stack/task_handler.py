@@ -6,11 +6,12 @@ from prompts.prompt_manager import PromptManager
 logger = logging.getLogger(__name__)
 
 class TaskHandler:
-    def __init__(self, llm, task_stack_manager, task_planner, memory_manager, prompt_logger=None):
+    def __init__(self, llm, task_stack_manager, task_planner, memory_manager, chat_manager, prompt_logger=None):
         self.llm = llm
         self.task_stack_manager = task_stack_manager
         self.task_planner = task_planner
         self.memory_manager = memory_manager
+        self.chat_manager = chat_manager  # Optional ChatManager for chat context
         self.prompt_logger = prompt_logger  # Optional prompt logger
         
         # Initialize PromptManager
@@ -38,41 +39,34 @@ class TaskHandler:
         steps = active_task.get('steps', [])
         failed_step = steps[step_index] if 0 <= step_index < len(steps) else {}
 
-        recent_memory_text = self._extract_recent_memories_text(50)
         stack_summary = self.task_stack_manager.generate_task_stack_summary()
         current_plan_text = self.task_planner.format_task_plan_for_prompt(active_task)
 
-        player_context = ""
+        # Build context for stuck task prompt
+        context = {
+            'memory_manager': self.memory_manager,
+            'stack_summary': stack_summary or 'Task stack is empty.',
+            'task_source': task_source,
+            'current_plan_text': current_plan_text,
+            'step_index': str(step_index + 1),
+            'failed_step_description': failed_step.get('description', 'Unknown'),
+            'reason': reason or 'Not specified',
+            'failure_list': self._format_failure_list(failures),
+            'suggestion': suggestion or 'None provided'
+        }
+        
+        # Add player context (empty for internal tasks)
         if player_name:
-            player_data = self.memory_manager.get_player_data(player_name) or {}
-            relationship = player_data.get('relationship', 'neutral')
-            trust_level = player_data.get('trust_level', 0.5)
-            personality = ", ".join(player_data.get('personality', [])[-3:]) or 'unknown'
-            preferences = ", ".join(player_data.get('preferences', [])[-3:]) or 'unknown'
-            player_context = (
-                f"6. PLAYER CONTEXT (for player-sourced tasks):\n"
-                f"Player: {player_name}\n"
-                f"Relationship: {relationship}\n"
-                f"Trust level: {trust_level:.2f}\n"
-                f"Traits: {personality}\n"
-                f"Preferences: {preferences}\n"
-            )
-
+            context['player'] = player_name  # For $PLAYER_INFO variable
+            context['player_name'] = player_name  # For $PLAYER_NAME variable
+        else:
+            context['player'] = None  # Will trigger default in get_player_info
+            context['player_name'] = 'N/A (internal task)'
+        
         # Use PromptManager to render stuck task handling prompt
         prompt = await self.prompt_manager.render(
             'task_stack/handle_stuck_task.txt',
-            context={
-                'STACK_SUMMARY': stack_summary or 'Task stack is empty.',
-                'TASK_SOURCE': task_source,
-                'CURRENT_PLAN_TEXT': current_plan_text,
-                'STEP_INDEX': str(step_index + 1),
-                'FAILED_STEP_DESCRIPTION': failed_step.get('description', 'Unknown'),
-                'REASON': reason or 'Not specified',
-                'FAILURE_LIST': self._format_failure_list(failures),
-                'SUGGESTION': suggestion or 'None provided',
-                'RECENT_MEMORY_TEXT': recent_memory_text,
-                'PLAYER_CONTEXT': player_context
-            }
+            context=context
         )
 
         try:
@@ -240,25 +234,24 @@ class TaskHandler:
         active_task = self.task_stack_manager.get_active_task()
         current_task_text = self.task_planner.format_task_plan_for_prompt(active_task)
 
-        player_data = self.memory_manager.get_player_data(player_name) or {}
-        relationship = player_data.get('relationship', 'neutral')
-        trust_level = player_data.get('trust_level', 0.5)
-        personality = ", ".join(player_data.get('personality', [])[-3:]) or 'unknown'
-        preferences = ", ".join(player_data.get('preferences', [])[-3:]) or 'unknown'
-
+        # Build context for prompt
+        context = {
+            'memory_manager': self.memory_manager,
+            'player': player_name,  # For $PLAYER_INFO variable
+            'player_name': player_name,  # For $PLAYER_NAME variable
+            'directive': directive,
+            'stack_summary': stack_summary or 'Task stack is empty.',
+            'current_task_text': current_task_text
+        }
+        
+        # Add chat_manager if available
+        if self.chat_manager:
+            context['chat_manager'] = self.chat_manager
+        
         # Use PromptManager to render player directive handling prompt
         prompt = await self.prompt_manager.render(
             'task_stack/handle_player_directive.txt',
-            context={
-                'PLAYER_NAME': player_name,
-                'DIRECTIVE': directive,
-                'STACK_SUMMARY': stack_summary or 'Task stack is empty.',
-                'CURRENT_TASK_TEXT': current_task_text,
-                'RELATIONSHIP': relationship,
-                'TRUST_LEVEL': f"{trust_level:.2f}",
-                'PERSONALITY': personality,
-                'PREFERENCES': preferences
-            }
+            context=context
         )
 
         try:
@@ -270,9 +263,7 @@ class TaskHandler:
                     prompt_type="player_directive_handling",
                     metadata={
                         "player_name": player_name,
-                        "directive": directive,
-                        "relationship": relationship,
-                        "trust_level": trust_level
+                        "directive": directive
                     }
                 )
                 logger.debug(f"Player directive handling prompt saved to: {prompt_file}")
@@ -356,19 +347,6 @@ class TaskHandler:
             'player_message': player_message,
             'player_name': player_name
         }
-
-    def _extract_recent_memories_text(self, limit: int = 50) -> str:
-        memories = self.memory_manager.get_recent_memories(limit)
-        if not memories:
-            return 'No recent memories.'
-
-        lines = []
-        for entry in memories:
-            timestamp = entry.get('timestamp', '')
-            event_type = entry.get('type', 'event')
-            content = entry.get('content', '')
-            lines.append(f"- [{timestamp}] {event_type}: {content}")
-        return "\n".join(lines)
 
     def _format_failure_list(self, failures: list) -> str:
         if not failures:

@@ -46,13 +46,11 @@ TASK_PLAN: get_task_plan
 # ========== Memory Related ==========
 PLAYERS_INFO: get_players_info
 PLAYER_INFO: get_player_info
-PLAYER_RELATIONSHIP: get_player_relationship
 MEMORY: get_recent_memories
 
 # ========== Auxiliary Information ==========
 TIMESTAMP: get_timestamp
 AGENT_AGE: get_agent_age
-INVENTORY_SUMMARY: get_inventory_summary
 NAME: get_agent_name
 AGENT_NAME: get_agent_name
 TASK_PLAN_CONTEXT: get_task_plan_context
@@ -62,9 +60,6 @@ CODE_DOCS: get_code_docs
 STRATEGIC_GOAL: get_strategic_goal
 TASK_STACK: get_task_stack_summary
 ACTIVE_TASK: get_active_task_summary
-RECENT_MEMORIES: get_recent_memories_chat
-PLAYER_INFO: get_player_info_summary
-PLAYER_OPINION: get_player_opinion
 CHAT_CONTEXT: get_chat_context
 
 # ========== Special Direct Values ==========

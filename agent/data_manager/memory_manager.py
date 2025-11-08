@@ -4,7 +4,7 @@ Memory and Learned Experience Manager
 Manages persistent storage of:
 - Short-term memory (recent events, conversations)
 - Long-term learned experience (insights from successes/failures, lessons learned)
-- Player information (personality traits, preferences)
+- Player information
 """
 
 import json
@@ -185,67 +185,49 @@ class MemoryManager:
     
     # ===== PLAYER INFORMATION =====
     
-    def update_player_info(self, player_name: str, info_type: str, content: str):
+    def update_player_description(self, player_name: str, description: str):
         """
-        Update player information
+        Update player description
+        
+        This method replaces the entire description with new text from the LLM.
+        The LLM should incorporate previous knowledge when generating the new description.
         
         Args:
             player_name: Player username
-            info_type: Type of info (e.g., "personality", "preference", "relationship")
-            content: Information content
+            description: Complete description of the player from bot's perspective
         """
         if player_name not in self.players:
             self.players[player_name] = {
                 'first_met': datetime.now().isoformat(),
-                'personality': [],
-                'preferences': [],
-                'interactions': [],
-                'relationship': 'neutral',  # neutral, friendly, hostile
-                'trust_level': 0.5  # 0.0 to 1.0
+                'last_interaction': datetime.now().isoformat(),
+                'description': ''
             }
         
-        # Add to appropriate category
-        if info_type == "personality":
-            self.players[player_name]['personality'].append(content)
-            # Keep only last 5 personality traits
-            self.players[player_name]['personality'] = self.players[player_name]['personality'][-5:]
-        elif info_type == "preference":
-            self.players[player_name]['preferences'].append(content)
-            self.players[player_name]['preferences'] = self.players[player_name]['preferences'][-5:]
-        else:
-            # General interaction
-            self.players[player_name]['interactions'].append({
-                'timestamp': datetime.now().isoformat(),
-                'content': content
-            })
-            # Keep only last 10 interactions
-            self.players[player_name]['interactions'] = self.players[player_name]['interactions'][-10:]
+        # Update description and last interaction time
+        self.players[player_name]['description'] = description
+        self.players[player_name]['last_interaction'] = datetime.now().isoformat()
         
         self._save_json(self.players_file, self.players)
-        logger.info(f"Updated player info for {player_name}: {info_type}")
+        logger.info(f"Updated player description for {player_name} ({len(description)} chars)")
     
     def get_player_info(self, player_name: str) -> str:
         """
-        Get formatted player information
+        Get formatted player description
         
         Args:
             player_name: Player username
         
         Returns:
-            Formatted player info string
+            Player description or default message
         """
         if player_name not in self.players:
             return f"No information about {player_name} yet."
         
-        info = self.players[player_name]
-        lines = [f"=== {player_name} ==="]
+        description = self.players[player_name].get('description', '')
+        if not description:
+            return f"No information about {player_name} yet."
         
-        if info.get('personality'):
-            lines.append("Personality: " + ", ".join(info['personality']))
-        if info.get('preferences'):
-            lines.append("Preferences: " + ", ".join(info['preferences']))
-        
-        return "\n".join(lines)
+        return description
     
     def get_player_data(self, player_name: str) -> dict:
         """
@@ -255,7 +237,8 @@ class MemoryManager:
             player_name: Player username
         
         Returns:
-            Player data dict or None if player not found
+            Player data dict with 'description', 'first_met', 'last_interaction'
+            or None if player not found
         """
         return self.players.get(player_name, None)
     
@@ -266,10 +249,10 @@ class MemoryManager:
         
         lines = ["=== KNOWN PLAYERS ==="]
         for name, info in self.players.items():
-            personality = info.get('personality', [])
-            if personality:
-                lines.append(f"- {name}: {', '.join(personality[:2])}")
+            description = info.get('description', '')
+            if description:
+                lines.append(f"- {name}: {description}")
             else:
-                lines.append(f"- {name}")
+                lines.append(f"- {name}: (no description yet)")
         
         return "\n".join(lines)

@@ -830,7 +830,6 @@ const settings = {
 - **详细架构文档**: [ARCHITECTURE.md](ARCHITECTURE.md)
   - 包含完整的沉思系统设计愿景 🌟
 - **任务流程文档**: [TASK_FLOW.md](TASK_FLOW.md)
-- **任务栈设计**: [agent/brain/task_stack/TASK_STACK_DESIGN.md](agent/brain/task_stack/TASK_STACK_DESIGN.md)
 
 ---
 

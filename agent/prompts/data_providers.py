@@ -326,12 +326,6 @@ class DataProviders:
             max_insights=10,
             max_lessons=20
         )
-        
-        # Add player relationship summary
-        players_info = memory_manager.get_all_players_summary()
-        if players_info and players_info != "No players known yet.":
-            learned_exp += "\n\n" + players_info
-        
         return learned_exp if learned_exp else "No learned experience yet."
     
     @staticmethod
@@ -409,58 +403,26 @@ class DataProviders:
     @staticmethod
     def get_player_info(context: Dict[str, Any]) -> str:
         """
-        Get specific player personality and preferences.
+        Get player description from bot's perspective.
         Maps to $PLAYER_INFO variable.
         
         Args:
             context: Must contain 'player' and 'memory_manager' keys
             
         Returns:
-            Formatted string like "Personality: calm, helpful, Preferences: building, exploring"
+            Player description or default message
         """
         player = context.get('player')
         memory_manager = context.get('memory_manager')
         
         if not player or not memory_manager:
-            raise ValueError("player and memory_manager are required in context for get_player_info")
+            # Fallback for edge cases
+            if not player:
+                return "Unknown player"
+            return f"No information about {player} yet."
         
-        player_data = memory_manager.get_player_data(player)
-        if not player_data:
-            return "Personality: unknown, Preferences: unknown"
-        
-        personality_list = player_data.get('personality', [])
-        preferences_list = player_data.get('preferences', [])
-        
-        # Get last 3 entries for each
-        personality = ', '.join(personality_list[-3:]) if personality_list else 'unknown'
-        preferences = ', '.join(preferences_list[-3:]) if preferences_list else 'unknown'
-        
-        return f"Personality: {personality}, Preferences: {preferences}"
-    
-    @staticmethod
-    def get_player_relationship(context: Dict[str, Any]) -> str:
-        """
-        Get relationship status with a player.
-        Maps to $PLAYER_RELATIONSHIP variable.
-        
-        Args:
-            context: Must contain 'player' and 'memory_manager' keys
-            
-        Returns:
-            Relationship like "neutral", "friendly", or "hostile"
-        """
-        player = context.get('player')
-        memory_manager = context.get('memory_manager')
-        
-        if not player or not memory_manager:
-            raise ValueError("player and memory_manager are required in context for get_player_relationship")
-        
-        player_data = memory_manager.get_player_data(player)
-        if not player_data:
-            return "neutral"
-        
-        return player_data.get('relationship', 'neutral')
-    
+        return memory_manager.get_player_info(player)
+
     @staticmethod
     def get_recent_memories(context: Dict[str, Any]) -> str:
         """
@@ -530,28 +492,6 @@ class DataProviders:
             return f"{hours} hours"
         
         return f"{agent_age_days} days"
-    
-    @staticmethod
-    def get_inventory_summary(context: Dict[str, Any]) -> str:
-        """
-        Get simplified inventory summary (comma-separated list).
-        Maps to $INVENTORY_SUMMARY variable.
-        
-        Args:
-            context: Must contain 'state' key
-            
-        Returns:
-            Comma-separated inventory like "wood: 10, stone: 5" or "Empty inventory"
-        """
-        state = context.get('state', {})
-        inventory = state.get('inventory', {})
-        
-        if not inventory:
-            return "Empty inventory"
-        
-        # Sort by name and format as "name: count"
-        items = ', '.join([f"{name}: {count}" for name, count in sorted(inventory.items())])
-        return items
     
     @staticmethod
     def get_agent_name(context: Dict[str, Any]) -> str:
@@ -629,7 +569,7 @@ This step: {current_step.get('description', 'Unknown')}"""
         strategic_goal_data = state.get('strategic_goal')
         
         if isinstance(strategic_goal_data, dict):
-            return strategic_goal_data.get('goal_priority', 'exploring the world')
+            return strategic_goal_data.get('goal', 'exploring the world')
         elif isinstance(strategic_goal_data, str):
             return strategic_goal_data
         else:
@@ -671,84 +611,6 @@ This step: {current_step.get('description', 'Unknown')}"""
                 return current_step.get('description', 'figuring out what to do next')
         
         return 'currently idle'
-    
-    @staticmethod
-    def get_recent_memories_chat(context: Dict[str, Any]) -> str:
-        """
-        Get recent memories formatted for chat (differs from $MEMORY).
-        
-        Args:
-            context: Must contain 'memory_manager'
-        
-        Returns:
-            Formatted recent memories
-        """
-        memory_manager = context.get('memory_manager')
-        if not memory_manager:
-            return "No recent memories."
-        
-        recent_memory_entries = memory_manager.get_recent_memories(count=5)
-        if recent_memory_entries:
-            memory_lines = []
-            for entry in recent_memory_entries:
-                event_type = entry.get('type', 'event')
-                content = entry.get('content', '')
-                memory_lines.append(f"- [{event_type}] {content}")
-            return "\n".join(memory_lines)
-        else:
-            return "No recent memories."
-    
-    @staticmethod
-    def get_player_info_summary(context: Dict[str, Any]) -> str:
-        """
-        Get player info summary for chat.
-        Requires PLAYER_NAME to be set in context.
-        
-        Args:
-            context: Must contain 'memory_manager' and 'PLAYER_NAME'
-        
-        Returns:
-            Player info summary string
-        """
-        memory_manager = context.get('memory_manager')
-        player_name = context.get('player_name')
-        
-        if not memory_manager or not player_name:
-            return "Personality: unknown, Preferences: unknown"
-        
-        player_data = memory_manager.get_player_data(player_name)
-        if player_data:
-            personality_list = player_data.get('personality', [])
-            preferences_list = player_data.get('preferences', [])
-            personality = ', '.join(personality_list[-3:]) if personality_list else 'unknown'
-            preferences = ', '.join(preferences_list[-3:]) if preferences_list else 'unknown'
-            return f"Personality: {personality}, Preferences: {preferences}"
-        else:
-            return "Personality: unknown, Preferences: unknown"
-    
-    @staticmethod
-    def get_player_opinion(context: Dict[str, Any]) -> str:
-        """
-        Get player relationship opinion for chat.
-        Requires PLAYER_NAME to be set in context.
-        
-        Args:
-            context: Must contain 'memory_manager' and 'PLAYER_NAME'
-        
-        Returns:
-            Player opinion string
-        """
-        memory_manager = context.get('memory_manager')
-        player_name = context.get('player_name')
-        
-        if not memory_manager or not player_name:
-            return "neutral"
-        
-        player_data = memory_manager.get_player_data(player_name)
-        if player_data:
-            return player_data.get('relationship', 'neutral')
-        else:
-            return "neutral"
     
     @staticmethod
     def get_chat_context(context: Dict[str, Any]) -> str:
@@ -807,13 +669,11 @@ PROVIDER_FUNCTIONS = {
     # Memory related
     'get_players_info': DataProviders.get_players_info,
     'get_player_info': DataProviders.get_player_info,
-    'get_player_relationship': DataProviders.get_player_relationship,
     'get_recent_memories': DataProviders.get_recent_memories,
     
     # Auxiliary information
     'get_timestamp': DataProviders.get_timestamp,
     'get_agent_age': DataProviders.get_agent_age,
-    'get_inventory_summary': DataProviders.get_inventory_summary,
     'get_agent_name': DataProviders.get_agent_name,
     'get_task_plan_context': DataProviders.get_task_plan_context,
     'get_code_docs': DataProviders.get_code_docs,
@@ -822,8 +682,5 @@ PROVIDER_FUNCTIONS = {
     'get_strategic_goal': DataProviders.get_strategic_goal,
     'get_task_stack_summary': DataProviders.get_task_stack_summary,
     'get_active_task_summary': DataProviders.get_active_task_summary,
-    'get_recent_memories_chat': DataProviders.get_recent_memories_chat,
-    'get_player_info_summary': DataProviders.get_player_info_summary,
-    'get_player_opinion': DataProviders.get_player_opinion,
     'get_chat_context': DataProviders.get_chat_context,
 }

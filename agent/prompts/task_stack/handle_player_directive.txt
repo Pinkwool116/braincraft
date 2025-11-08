@@ -26,12 +26,9 @@ $CURRENT_TASK_TEXT
 Recent conversation:
 $CHAT_CONTEXT
 
-Player relationship:
+Player information:
 - Player: $PLAYER_NAME
-- Relationship status: $RELATIONSHIP
-- Trust level: $TRUST_LEVEL
-- Observed traits: $PERSONALITY
-- Preferences: $PREFERENCES
+- $PLAYER_INFO
 
 YOUR DECISION:
 Decide whether to ACCEPT or REJECT this player directive: "$DIRECTIVE"

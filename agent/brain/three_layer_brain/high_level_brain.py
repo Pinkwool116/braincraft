@@ -11,7 +11,6 @@ Responsible for:
 import asyncio
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime
 from data_manager.memory_manager import MemoryManager
 from data_manager.mind_state_manager import MindStateManager
 from prompts.prompt_logger import PromptLogger
@@ -42,7 +41,6 @@ class HighLevelBrain:
         self.shared_state = shared_state
         self.config = config
         self.llm = llm_model
-        self.last_think_time = None
         
         agent_name = config.get('agent_name', 'BrainyBot')
         self.memory_manager = MemoryManager(agent_name)
@@ -85,10 +83,8 @@ class HighLevelBrain:
         else:
             logger.info("High-level brain: Periodic wake (contemplation)")
         
-        self.last_think_time = datetime.now()
-        
         try:
-            # Step 1: Handle modification requests (ALWAYS CHECK - highest priority)
+            # Step 1: Handle modification requests
             mod_request = await self.shared_state.get('modification_request')
             if mod_request and not mod_request.get('processed', False):
                 logger.info("⚠️ Processing modification request from mid-level")
@@ -168,11 +164,11 @@ class HighLevelBrain:
             self.prompt_logger.update_response(prompt_file, response)
             
             plan = self.task_planner._parse_llm_json(response)
-            logger.info(f"Strategic plan: {plan.get('goal_priority', 'N/A')}")
+            logger.info(f"Strategic plan: {plan.get('goal', 'N/A')}")
             return plan or {}
         except Exception as e:
             logger.error(f"Error generating strategic plan: {e}", exc_info=True)
-            return {'goal_priority': 'survival', 'reasoning': str(e)}
+            raise ValueError("Failed to generate strategic plan") from e
 
     async def _route_modification_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Dispatch modification requests to the TaskHandler."""
@@ -190,10 +186,10 @@ class HighLevelBrain:
         if not self.task_stack_manager.get_active_task():
             strategic_plan = await self._generate_strategic_plan()
             await self.shared_state.update('strategic_goal', strategic_plan)
-            goal_priority = strategic_plan.get('goal_priority')
-            if goal_priority and goal_priority != 'None':
+            goal = strategic_plan.get('goal')
+            if goal and goal != 'None':
                 new_plan = await self.task_planner.decompose_goal_to_steps(
-                    goal=goal_priority,
+                    goal=goal,
                     strategic_guidance=strategic_plan.get('strategic_guidance', ''),
                     source='internal',
                     player_name=None

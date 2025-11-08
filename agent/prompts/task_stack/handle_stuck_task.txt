@@ -35,10 +35,12 @@ $FAILED_STEP_DESCRIPTION
 - Reported Failures: $FAILURE_LIST
 - Suggestion for a fix: $SUGGESTION
 
-5. RECENT SHORT-TERM MEMORY (last 50 events):
-$RECENT_MEMORY_TEXT
+5. RECENT MEMORY:
+$MEMORY
 
-$PLAYER_CONTEXT
+6. PLAYER CONTEXT (if player-sourced task):
+Player: $PLAYER_NAME
+$PLAYER_INFO
 
 YOUR DECISION:
 Based on all the context, choose ONE of the following decisions and respond with a single JSON object.
