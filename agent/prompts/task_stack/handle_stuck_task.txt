@@ -34,6 +34,8 @@ $FAILED_STEP_DESCRIPTION
 - Reason for Failure: $REASON
 - Reported Failures: $FAILURE_LIST
 - Suggestion for a fix: $SUGGESTION
+- Mid-Level Analysis: $MID_LEVEL_ANALYSIS
+- Mid-Level Decision: $MID_LEVEL_DECISION
 
 5. RECENT MEMORY:
 $MEMORY
@@ -41,6 +43,19 @@ $MEMORY
 6. PLAYER CONTEXT (if player-sourced task):
 Player: $PLAYER_NAME
 $PLAYER_INFO
+
+7. Current Game State
+Health: $HEALTH
+Food: $FOOD
+Position: $POSITION
+Biome: $BIOME
+Time: $TIME_OF_DAY (Day $WORLD_DAY)
+
+8. Inventory Summary
+$INVENTORY
+
+9. Equipment
+$EQUIPMENT
 
 YOUR DECISION:
 Based on all the context, choose ONE of the following decisions and respond with a single JSON object.

@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, Optional
-import json
 from prompts.prompt_manager import PromptManager
+from utils.json_parser import parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +11,9 @@ class TaskHandler:
         self.task_stack_manager = task_stack_manager
         self.task_planner = task_planner
         self.memory_manager = memory_manager
-        self.chat_manager = chat_manager  # Optional ChatManager for chat context
+        self.chat_manager = chat_manager
         self.prompt_logger = prompt_logger  # Optional prompt logger
+        self.shared_state = task_stack_manager.shared_state
         
         # Initialize PromptManager
         self.prompt_manager = PromptManager()
@@ -35,6 +36,7 @@ class TaskHandler:
         failures = request.get('failures', [])
         suggestion = request.get('suggestion', '')
         reason = request.get('reason', '')
+        mid_level_analysis = request.get('mid_level_analysis', {})
 
         steps = active_task.get('steps', [])
         failed_step = steps[step_index] if 0 <= step_index < len(steps) else {}
@@ -42,8 +44,10 @@ class TaskHandler:
         stack_summary = self.task_stack_manager.generate_task_stack_summary()
         current_plan_text = self.task_planner.format_task_plan_for_prompt(active_task)
 
+        state = await self.shared_state.get_all()
         # Build context for stuck task prompt
         context = {
+            'state': state,
             'memory_manager': self.memory_manager,
             'stack_summary': stack_summary or 'Task stack is empty.',
             'task_source': task_source,
@@ -52,7 +56,9 @@ class TaskHandler:
             'failed_step_description': failed_step.get('description', 'Unknown'),
             'reason': reason or 'Not specified',
             'failure_list': self._format_failure_list(failures),
-            'suggestion': suggestion or 'None provided'
+            'suggestion': suggestion or 'None provided',
+            'mid_level_analysis': mid_level_analysis.get('analysis', 'Not provided') if mid_level_analysis else 'Not provided',
+            'mid_level_decision': mid_level_analysis.get('decision', 'N/A') if mid_level_analysis else 'N/A'
         }
         
         # Add player context (empty for internal tasks)
@@ -136,7 +142,7 @@ class TaskHandler:
                 sub_task = await self.task_planner.decompose_goal_to_steps(
                     goal=sub_goal,
                     strategic_guidance=strategic_guidance,
-                    source='internal',
+                    source=task_source,
                     player_name=player_name
                 )
                 
@@ -161,7 +167,7 @@ class TaskHandler:
                 revised_plan = await self.task_planner.decompose_goal_to_steps(
                     goal=goal_text,
                     strategic_guidance=strategic_guidance or 'Try a different approach to achieve this goal.',
-                    source='player',
+                    source=task_source,
                     player_name=player_name
                 )
                 
@@ -181,11 +187,10 @@ class TaskHandler:
             elif decision == 'ADD_SUB_TASK':
                 sub_goal = new_goal or f"Prerequisite for player request: {active_task.get('goal')}"
                 logger.info(f"Decomposing sub-task for player request: {sub_goal}")
-                
                 sub_task = await self.task_planner.decompose_goal_to_steps(
                     goal=sub_goal,
                     strategic_guidance=strategic_guidance,
-                    source='internal',
+                    source=task_source,
                     player_name=player_name
                 )
                 
@@ -233,9 +238,12 @@ class TaskHandler:
         stack_summary = self.task_stack_manager.generate_task_stack_summary()
         active_task = self.task_stack_manager.get_active_task()
         current_task_text = self.task_planner.format_task_plan_for_prompt(active_task)
-
+        
+        state = await self.shared_state.get_all()
         # Build context for prompt
         context = {
+            'state': state,
+            'chat_manager': self.chat_manager,
             'memory_manager': self.memory_manager,
             'player': player_name,  # For $PLAYER_INFO variable
             'player_name': player_name,  # For $PLAYER_NAME variable
@@ -243,10 +251,6 @@ class TaskHandler:
             'stack_summary': stack_summary or 'Task stack is empty.',
             'current_task_text': current_task_text
         }
-        
-        # Add chat_manager if available
-        if self.chat_manager:
-            context['chat_manager'] = self.chat_manager
         
         # Use PromptManager to render player directive handling prompt
         prompt = await self.prompt_manager.render(
@@ -320,9 +324,6 @@ class TaskHandler:
                     'player_name': player_name
                 }
 
-            if not player_message:
-                player_message = f"Okay {player_name}, I'll start working on '{goal_text}'."
-
             return {
                 'decision': 'accepted_player_task',
                 'explanation': reason or 'Accepted player directive.',
@@ -330,13 +331,6 @@ class TaskHandler:
                 'player_message': player_message,
                 'player_name': player_name
             }
-
-        # Reject path
-        if not player_message:
-            player_message = (
-                f"Sorry {player_name}, I cannot take on that request right now. "
-                "I will let you know when I'm available."
-            )
 
         logger.info("Rejected player directive from %s: %s", player_name, directive)
 
@@ -354,23 +348,20 @@ class TaskHandler:
         return "\n".join(f"- {failure}" for failure in failures[-5:])
 
     def _parse_llm_json(self, response: str) -> Dict[str, Any]:
-        """Extract JSON payload from an LLM response."""
+        """
+        Extract JSON payload from an LLM response using robust parser.
+        
+        Args:
+            response: LLM response text
+            
+        Returns:
+            Parsed JSON dict, or empty dict if parsing fails
+        """
         if not response:
             return {}
+        
         try:
-            if '```json' in response:
-                start = response.find('```json') + 7
-                end = response.find('```', start)
-                payload = response[start:end].strip()
-            elif '```' in response:
-                start = response.find('```') + 3
-                end = response.find('```', start)
-                payload = response[start:end].strip()
-            else:
-                start = response.find('{')
-                end = response.rfind('}') + 1
-                payload = response[start:end]
-            return json.loads(payload)
+            return parse_json_response(response, strict=False)
         except Exception as exc:
             logger.error("Failed to parse LLM JSON response: %s", exc)
             logger.debug("LLM response: %s", response)

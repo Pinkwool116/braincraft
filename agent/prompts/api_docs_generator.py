@@ -40,7 +40,7 @@ def get_skills_api_docs() -> str:
     return """## Skills Library (skills.*)
 
 ### Movement Skills
-- **async skills.goToPlayer(bot, username, min_distance=3)**: Navigate to a player's position
+- **async skills.goToPlayer(bot, username, distance=3)**: Navigate to a player's position
   - Returns: boolean (true if reached, false if failed)
   - Example: `await skills.goToPlayer(bot, 'Steve', 2);`
 
@@ -52,22 +52,26 @@ def get_skills_api_docs() -> str:
   - Returns: void
   - Example: `await skills.moveAway(bot, 10);`
 
-- **async skills.followPlayer(bot, username, follow_distance=3)**: Follow a player continuously
+- **async skills.followPlayer(bot, username, distance=3)**: Follow a player continuously
   - Returns: void
   - Example: `await skills.followPlayer(bot, 'Steve', 5);`
 
 ### Resource Gathering Skills
-- **async skills.collectBlock(bot, block_type, count=1)**: Mine and collect blocks
+- **async skills.collectBlock(bot, blockType, num=1, exclude=null)**: Mine and collect blocks
   - Returns: number (actual amount collected, may be less than requested)
   - Example: `await skills.collectBlock(bot, 'oak_log', 10);`
+  - Example with exclude: `await skills.collectBlock(bot, 'oak_log', 5, ['oak_leaves']);`
   - Note: Requires proper tool for some blocks (pickaxe for stone/ore, axe for logs faster)
+  - **IMPORTANT**: Parameters are positional - do NOT use object syntax like `{exclude: [...], range: ...}`
+  - exclude: Array of block names to ignore during collection (e.g., ['oak_leaves'])
+  - **NO range parameter** - function automatically searches nearby area
 
 - **async skills.pickupNearbyItems(bot)**: Pick up items on the ground
   - Returns: number (items picked up)
   - Example: `await skills.pickupNearbyItems(bot);`
 
 ### Combat Skills
-- **async skills.attackEntity(bot, entity)**: Attack a specific entity
+- **async skills.attackEntity(bot, entity, kill=true)**: Attack a specific entity
   - Returns: boolean (success)
   - Example: `let zombie = world.getNearestEntityWhere(bot, e => e.name === 'zombie', 16); await skills.attackEntity(bot, zombie);`
 
@@ -75,66 +79,68 @@ def get_skills_api_docs() -> str:
   - Returns: void
   - Example: `await skills.defendSelf(bot, 16);`
 
-- **async skills.avoidEnemies(bot, range=16)**: Move away from all nearby enemies
+- **async skills.avoidEnemies(bot, distance=16)**: Move away from all nearby enemies
   - Returns: void
   - Example: `await skills.avoidEnemies(bot, 20);`
 
 ### Crafting Skills
-- **async skills.craftRecipe(bot, item_name, count=1)**: Craft items using available materials
+- **async skills.craftRecipe(bot, itemName, num=1)**: Craft items using available materials
   - Returns: boolean (success)
   - Example: `await skills.craftRecipe(bot, 'wooden_pickaxe', 1);`
   - Note: Will find crafting table if needed
 
-- **async skills.smeltItem(bot, item_name, count=1)**: Smelt items in a furnace
+- **async skills.smeltItem(bot, itemName, num=1)**: Smelt items in a furnace
   - Returns: number (amount smelted)
   - Example: `await skills.smeltItem(bot, 'iron_ore', 8);`
   - Note: Requires furnace and fuel
 
 ### Building Skills
-- **async skills.placeBlock(bot, block_type, x, y, z, placement_side='top', offset=false)**: Place a block at coordinates
+- **async skills.placeBlock(bot, blockType, x, y, z, placeOn='bottom', dontCheat=false)**: Place a block at ABSOLUTE world coordinates
+  - Parameters: x, y, z are ABSOLUTE world coordinates (NOT relative offsets!)
   - Returns: boolean (success)
-  - Example: `await skills.placeBlock(bot, 'torch', 100, 64, 200, 'top', false);`
-  - placement_side: 'top', 'bottom', 'north', 'south', 'east', 'west'
+  - Example: `let pos = world.getPosition(bot); await skills.placeBlock(bot, 'stone', pos.x + 2, pos.y, pos.z);`
+  - Example: `await skills.placeBlock(bot, 'torch', 100, 64, 200, 'side');`
+  - placeOn: 'top', 'bottom', 'north', 'south', 'east', 'west', 'side' (preferred side to place on)
+  - dontCheat: set to true to override cheat mode and place normally
+  - Note: Must have adjacent block to place against, cannot place in mid-air
 
 ### Inventory Skills
-- **async skills.equipItem(bot, item_name)**: Equip an item from inventory
+- **async skills.equip(bot, itemName)**: Equip an item from inventory to proper body part (hand, head, torso, legs, feet)
   - Returns: boolean (success)
-  - Example: `await skills.equipItem(bot, 'diamond_sword');`
-
-- **async skills.eat(bot)**: Eat food from inventory if hungry
-  - Returns: boolean (success)
-  - Example: `await skills.eat(bot);`
+  - Example: `await skills.equip(bot, 'diamond_sword');`
+  - Note: Automatically detects item type and equips to correct slot (armor to armor slot, tools to hand)
 
 ### Interaction Skills
-- **async skills.useBlock(bot, block)**: Use/interact with a block (doors, buttons, etc.)
-  - Returns: boolean (success)
-  - Example: `let door = world.getNearestBlock(bot, 'oak_door', 5); await skills.useBlock(bot, door);`
-
-- **async skills.discard(bot, item_name, count=1)**: Drop items from inventory
+- **async skills.discard(bot, itemName, num=1)**: Drop items from inventory
   - Returns: boolean (success)
   - Example: `await skills.discard(bot, 'dirt', 64);`
 
 ### Advanced Movement Skills
-- **async skills.goToNearestBlock(bot, block_type, min_distance=2, range=64)**: Go to nearest block of type
+- **async skills.goToNearestBlock(bot, blockType, min_distance=2, range=64)**: Go to nearest block of type
   - Returns: boolean (success)
   - Example: `await skills.goToNearestBlock(bot, 'crafting_table', 3, 32);`
   - Note: More convenient than getNearestBlock + goToPosition
 
-- **async skills.goToNearestEntity(bot, entity_type, min_distance=2, range=64)**: Go to nearest entity of type
+- **async skills.goToNearestEntity(bot, entityType, min_distance=2, range=64)**: Go to nearest entity of type
   - Returns: boolean (success)
   - Example: `await skills.goToNearestEntity(bot, 'cow', 2, 32);`
+
+- **async skills.goToGoal(bot, goal)**: Navigate to a pathfinder goal using optimized movements
+  - Returns: boolean (success)
+  - Example: `await skills.goToGoal(bot, new pf.goals.GoalNear(100, 64, 200, 1));`
+  - Note: Use pathfinder goals like GoalNear, GoalBlock, GoalXZ, etc.
 
 - **async skills.moveAwayFromEntity(bot, entity, distance=16)**: Move away from specific entity
   - Returns: void
   - Example: `let creeper = world.getNearestEntityWhere(bot, e => e.name === 'creeper', 16); await skills.moveAwayFromEntity(bot, creeper, 10);`
 
 ### Storage & Chest Skills
-- **async skills.putInChest(bot, item_name, num=-1)**: Put items into nearest chest
+- **async skills.putInChest(bot, itemName, num=-1)**: Put items into nearest chest
   - Returns: boolean (success)
   - Example: `await skills.putInChest(bot, 'dirt', 64);`
   - Note: num=-1 means put all of that item
 
-- **async skills.takeFromChest(bot, item_name, num=-1)**: Take items from nearest chest
+- **async skills.takeFromChest(bot, itemName, num=-1)**: Take items from nearest chest
   - Returns: boolean (success)
   - Example: `await skills.takeFromChest(bot, 'iron_ingot', 10);`
 
@@ -143,7 +149,7 @@ def get_skills_api_docs() -> str:
   - Example: `let contents = await skills.viewChest(bot);`
 
 ### Advanced Combat Skills
-- **async skills.attackNearest(bot, mob_type, kill=true)**: Attack nearest mob of specific type
+- **async skills.attackNearest(bot, mobType, kill=true)**: Attack nearest mob of specific type
   - Returns: boolean (success)
   - Example: `await skills.attackNearest(bot, 'zombie', true);`
   - Note: More convenient than getNearestEntityWhere + attackEntity
@@ -154,12 +160,12 @@ def get_skills_api_docs() -> str:
   - Example: `await skills.breakBlockAt(bot, 100, 64, 200);`
   - Note: Different from collectBlock - this just breaks without collecting
 
-- **async skills.activateNearestBlock(bot, block_type)**: Activate nearest block (button, lever, etc.)
+- **async skills.activateNearestBlock(bot, type)**: Activate nearest block (button, lever, etc.)
   - Returns: boolean (success)
   - Example: `await skills.activateNearestBlock(bot, 'lever');`
 
 ### Survival & Daily Skills
-- **async skills.consume(bot, item_name="")**: Eat food or drink potion
+- **async skills.consume(bot, itemName="")**: Eat food or drink potion
   - Returns: boolean (success)
   - Example: `await skills.consume(bot, 'bread');`
   - Note: More versatile than eat() - works with potions too
@@ -178,7 +184,7 @@ def get_skills_api_docs() -> str:
   - Example: `await skills.useDoor(bot);` (finds nearest) or `await skills.useDoor(bot, door_position);`
 
 ### Farming Skills
-- **async skills.tillAndSow(bot, x, y, z, seed_type=null)**: Till ground and plant seeds
+- **async skills.tillAndSow(bot, x, y, z, seedType=null)**: Till ground and plant seeds
   - Returns: boolean (success)
   - Example: `await skills.tillAndSow(bot, 100, 64, 200, 'wheat_seeds');`
 
@@ -188,35 +194,37 @@ def get_skills_api_docs() -> str:
   - Example: `await skills.clearNearestFurnace(bot);`
 
 ### Villager Trading Skills
-- **async skills.showVillagerTrades(bot, villager_id)**: Show available trades from villager
+- **async skills.showVillagerTrades(bot, id)**: Show available trades from villager
   - Returns: string (trade list)
   - Example: `let trades = await skills.showVillagerTrades(bot, '12345');`
 
-- **async skills.tradeWithVillager(bot, villager_id, trade_index, count)**: Trade with villager
+- **async skills.tradeWithVillager(bot, id, index, count)**: Trade with villager
   - Returns: boolean (success)
   - Example: `await skills.tradeWithVillager(bot, '12345', 0, 1);`
 
 ### Mining & Exploration Skills
-- **async skills.digDown(bot, distance=10)**: Dig straight down
-  - Returns: boolean (success)
+- **async skills.digDown(bot, distance=10)**: Safely dig straight down with automatic safety checks
+  - Returns: boolean (true if successfully dug, false if stopped early due to hazards)
+  - Safety: Automatically stops if it reaches lava, water, or a fall > 2 blocks
   - Example: `await skills.digDown(bot, 20);`
-  - Warning: Dangerous! May fall into lava/void
+  - **PREFERRED over manual downward digging** - has built-in safety
 
-- **async skills.goToSurface(bot)**: Navigate to surface (y > 60)
+- **async skills.goToSurface(bot)**: Navigate to the surface (highest non-air block)
   - Returns: boolean (success)
+  - Use when: Underground, in a cave, or stuck in a hole
   - Example: `await skills.goToSurface(bot);`
 
 ### Tool Usage Skills
-- **async skills.useToolOn(bot, tool_name, target_name)**: Use tool on target block/entity
+- **async skills.useToolOn(bot, toolName, targetName)**: Use tool on target block/entity
   - Returns: boolean (success)
   - Example: `await skills.useToolOn(bot, 'shears', 'sheep');`
 
-- **async skills.useToolOnBlock(bot, tool_name, block)**: Use tool on specific block
+- **async skills.useToolOnBlock(bot, toolName, block)**: Use tool on specific block
   - Returns: boolean (success)
   - Example: `let log = world.getNearestBlock(bot, 'oak_log', 16); await skills.useToolOnBlock(bot, 'diamond_axe', log);`
 
 ### Social Skills
-- **async skills.giveToPlayer(bot, item_type, username, num=1)**: Give items to player
+- **async skills.giveToPlayer(bot, itemType, username, num=1)**: Give items to player
   - Returns: boolean (success)
   - Example: `await skills.giveToPlayer(bot, 'diamond', 'Steve', 5);`
 
@@ -232,14 +240,6 @@ def get_skills_api_docs() -> str:
   - Example: `log(bot, 'Task completed!');`
   - NOTE: This is NOT async, no await needed
 
-- **async skills.lookAtPlayer(bot, username)**: Look at a player
-  - Returns: void
-  - Example: `await skills.lookAtPlayer(bot, 'Steve');`
-
-- **async skills.lookAtPosition(bot, x, y, z)**: Look at specific coordinates
-  - Returns: void
-  - Example: `await skills.lookAtPosition(bot, 100, 65, 200);`
-
 ### Important Notes:
 - ALL skills (except log) are async and MUST be awaited
 - skills.log(bot, message) is NOT async - do NOT use await
@@ -247,6 +247,23 @@ def get_skills_api_docs() -> str:
 - Use skills.wait(bot, ms) for delays, NOT setTimeout
 - Always check return values to verify success
 - For mining, the bot needs appropriate tools (pickaxe for stone/ores, etc.)
+- **CRITICAL**: All skill functions use POSITIONAL parameters - do NOT use object syntax
+  - ❌ WRONG: `await skills.collectBlock(bot, 'oak_log', { num: 5, exclude: ['leaves'] })`
+  - ✅ CORRECT: `await skills.collectBlock(bot, 'oak_log', 5, ['leaves'])`
+
+### CRITICAL: Coordinate System Usage
+**ABSOLUTE COORDINATES (world coordinates):**
+- skills.placeBlock(bot, type, x, y, z) - uses ABSOLUTE world coordinates
+- skills.goToPosition(bot, x, y, z) - uses ABSOLUTE world coordinates
+- Block.position - contains ABSOLUTE world coordinates
+- world.getPosition(bot) - returns ABSOLUTE world coordinates
+- Example: If bot is at (100, 64, 200), to place block 2 blocks north use: placeBlock(bot, 'stone', 100, 64, 198)
+
+**RELATIVE COORDINATES (offset from bot):**
+- world.getBlockAtPosition(bot, x, y, z) - uses RELATIVE offsets from bot's position
+- Example: To check block 2 blocks north of bot use: getBlockAtPosition(bot, 0, 0, -2)
+- Example: To check block below bot use: getBlockAtPosition(bot, 0, -1, 0)
+- Example: To check block 1 east and 1 up use: getBlockAtPosition(bot, 1, 1, 0)
 """
 
 
@@ -254,8 +271,32 @@ def get_world_api_docs() -> str:
     """Get complete documentation for world query functions"""
     return """## World Query Library (world.*)
 
+### Spatial Awareness Functions
+**Use these to understand your environment and avoid getting stuck/trapped:**
+
+- **world.getSurroundingBlocks(bot)**: Get blocks around bot (below, legs, head)
+  - Returns: Array of strings ["Block Below: grass", "Block at Legs: air", "Block at Head: air"]
+  - Use to check: Am I standing on solid ground? Am I in water/lava?
+  - Example: `let surrounding = world.getSurroundingBlocks(bot);`
+
+- **world.getFirstBlockAboveHead(bot, ignore_types=null, distance=32)**: Find first solid block above
+  - Returns: string (e.g., "stone (5 blocks up)") or "none"
+  - **Critical for cave/hole detection**: 
+    * "none" = outdoors/open sky
+    * "stone (2 blocks up)" = in a cave or hole
+    * "leaves (15 blocks up)" = under a tree
+  - Example: `let above = world.getFirstBlockAboveHead(bot, null, 32);`
+
+- **world.getBlockAtPosition(bot, x, y, z)**: Get block at RELATIVE offset from bot's position
+  - Parameters: x, y, z are RELATIVE offsets (NOT absolute world coordinates!)
+  - Returns: Block object {name, position, ...}
+  - Example: `let blockBelow = world.getBlockAtPosition(bot, 0, -1, 0);` (directly below)
+  - Example: `let blockNorth = world.getBlockAtPosition(bot, 0, 0, -2);` (2 blocks north)
+  - Example: `let blockEastAndUp = world.getBlockAtPosition(bot, 1, 1, 0);` (1 east, 1 up)
+  - WARNING: Do NOT use absolute coordinates like getBlockAtPosition(bot, 587, 72, 121)!
+
 ### Block Query Functions
-- **world.getNearestBlock(bot, block_type, max_distance=16)**: Find nearest block of a type
+- **world.getNearestBlock(bot, block_type, distance=16)**: Find nearest block of a type
   - Returns: Block object {name, position, ...} or null
   - Example: `let tree = world.getNearestBlock(bot, 'oak_log', 32);`
 
@@ -264,17 +305,10 @@ def get_world_api_docs() -> str:
   - Example: `let trees = world.getNearestBlocks(bot, ['oak_log', 'birch_log'], 32);`
   - Note: block_types can be null to get all blocks, or array of block names
 
-- **world.getBlockAtPosition(bot, x, y, z)**: Get block at relative offset from bot
-  - Returns: Block object
-  - Example: `let blockBelow = world.getBlockAtPosition(bot, 0, -1, 0);`
-
-- **world.getSurroundingBlocks(bot)**: Get blocks around bot (below, legs, head)
-  - Returns: Array of strings ["Block Below: grass", "Block at Legs: air", "Block at Head: air"]
-  - Example: `let surrounding = world.getSurroundingBlocks(bot);`
-
-- **world.getFirstBlockAboveHead(bot, ignore_types=null, distance=32)**: Find first solid block above
-  - Returns: string (e.g., "oak_leaves (5 blocks up)") or "none"
-  - Example: `let above = world.getFirstBlockAboveHead(bot, null, 20);`
+- **world.getNearestBlocksWhere(bot, predicate, distance=8, count=10000)**: Get blocks matching predicate function
+  - Returns: Array of Block objects
+  - Example: `let waterBlocks = world.getNearestBlocksWhere(bot, block => block.name === 'water', 16, 10);`
+  - Note: More flexible than getNearestBlocks - use custom predicate function
 
 - **world.getNearbyBlockTypes(bot, distance=16)**: Get unique block types nearby
   - Returns: Array of block names (strings)
@@ -304,6 +338,17 @@ def get_world_api_docs() -> str:
 - **world.isEntityType(name)**: Check if a name is a valid entity type
   - Returns: boolean
   - Example: `if (world.isEntityType('zombie')) { ... }`
+
+- **world.getVillagerProfession(entity)**: Get villager's profession from entity
+  - Returns: string (profession name like 'Farmer', 'Librarian', 'Unemployed', etc.)
+  - Example: `let villager = world.getNearestEntityWhere(bot, e => e.name === 'villager', 16); let job = world.getVillagerProfession(villager);`
+  - Note: Returns profession based on villager metadata
+
+### Path & Navigation Functions
+- **async world.isClearPath(bot, target)**: Check if there's a clear path to target without digging/placing
+  - Returns: boolean (true if path exists without obstacles)
+  - Example: `let canReach = await world.isClearPath(bot, targetEntity);`
+  - Note: This is async - must use await. Checks pathfinding without breaking/placing blocks
 
 ### Inventory & Crafting Functions
 - **world.getInventoryCounts(bot)**: Get inventory as {item: count} object
@@ -338,7 +383,8 @@ def get_world_api_docs() -> str:
   - Example: `if (world.shouldPlaceTorch(bot)) { await skills.placeBlock(bot, 'torch', ...); }`
 
 ### Important Notes:
-- ALL world functions are synchronous (NOT async) - do NOT use await
+- MOST world functions are synchronous (NOT async) - do NOT use await
+- EXCEPTION: world.isClearPath is async and MUST use await
 - world.getInventoryCounts is the preferred way to check inventory
 - Block objects have properties: name, position, type, metadata
 - Entity objects have properties: name, position, type, health

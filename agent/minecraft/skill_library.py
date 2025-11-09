@@ -38,7 +38,7 @@ class SkillLibrary:
         return {
             # Movement skills
             "goToPlayer": {
-                "params": ["username", "min_distance"],
+                "params": ["username", "distance"],
                 "description": "Go to a player's position",
                 "returns": "boolean (success)",
                 "example": "await skills.goToPlayer(bot, 'steve', 3);"
@@ -50,13 +50,13 @@ class SkillLibrary:
                 "example": "await skills.goToPosition(bot, 100, 64, 200, 0.5);"
             },
             "goToNearestBlock": {
-                "params": ["block_type", "min_distance", "range"],
+                "params": ["blockType", "min_distance", "range"],
                 "description": "Go to nearest block of specified type",
                 "returns": "boolean (success)",
                 "example": "await skills.goToNearestBlock(bot, 'crafting_table', 3, 32);"
             },
             "goToNearestEntity": {
-                "params": ["entity_type", "min_distance", "range"],
+                "params": ["entityType", "min_distance", "range"],
                 "description": "Go to nearest entity of specified type",
                 "returns": "boolean (success)",
                 "example": "await skills.goToNearestEntity(bot, 'cow', 2, 32);"
@@ -74,7 +74,7 @@ class SkillLibrary:
                 "example": "await skills.moveAwayFromEntity(bot, zombie, 5);"
             },
             "followPlayer": {
-                "params": ["username", "follow_distance"],
+                "params": ["username", "distance"],
                 "description": "Follow a player continuously",
                 "returns": "void",
                 "example": "await skills.followPlayer(bot, 'steve', 3);"
@@ -88,10 +88,10 @@ class SkillLibrary:
             
             # Resource gathering
             "collectBlock": {
-                "params": ["block_type", "count"],
-                "description": "Collect blocks of a specific type",
+                "params": ["blockType", "num", "exclude"],
+                "description": "Collect blocks of a specific type (NO range parameter - searches automatically)",
                 "returns": "number (amount collected)",
-                "example": "await skills.collectBlock(bot, 'oak_log', 10);"
+                "example": "await skills.collectBlock(bot, 'oak_log', 10); await skills.collectBlock(bot, 'oak_log', 5, ['oak_leaves']);"
             },
             "breakBlockAt": {
                 "params": ["x", "y", "z"],
@@ -108,13 +108,13 @@ class SkillLibrary:
             
             # Combat
             "attackEntity": {
-                "params": ["entity"],
+                "params": ["entity", "kill"],
                 "description": "Attack a specific entity",
                 "returns": "boolean (success)",
                 "example": "await skills.attackEntity(bot, zombie);"
             },
             "attackNearest": {
-                "params": ["mob_type", "kill"],
+                "params": ["mobType", "kill"],
                 "description": "Attack nearest mob of specified type",
                 "returns": "boolean (success)",
                 "example": "await skills.attackNearest(bot, 'zombie', true);"
@@ -126,7 +126,7 @@ class SkillLibrary:
                 "example": "await skills.defendSelf(bot, 8);"
             },
             "avoidEnemies": {
-                "params": ["range"],
+                "params": ["distance"],
                 "description": "Move away from all nearby enemies",
                 "returns": "void",
                 "example": "await skills.avoidEnemies(bot, 16);"
@@ -134,13 +134,13 @@ class SkillLibrary:
             
             # Crafting
             "craftRecipe": {
-                "params": ["item_name", "count"],
+                "params": ["itemName", "num"],
                 "description": "Craft items using available materials",
                 "returns": "boolean (success)",
                 "example": "await skills.craftRecipe(bot, 'wooden_pickaxe', 1);"
             },
             "smeltItem": {
-                "params": ["item_name", "count"],
+                "params": ["itemName", "num"],
                 "description": "Smelt items in a furnace",
                 "returns": "number (amount smelted)",
                 "example": "await skills.smeltItem(bot, 'iron_ore', 8);"
@@ -154,39 +154,39 @@ class SkillLibrary:
             
             # Building
             "placeBlock": {
-                "params": ["block_type", "x", "y", "z", "placement_side", "offset"],
-                "description": "Place a block at specific coordinates",
+                "params": ["blockType", "x", "y", "z", "placeOn", "dontCheat"],
+                "description": "Place a block at ABSOLUTE world coordinates (x, y, z are world coords, NOT relative offsets)",
                 "returns": "boolean (success)",
-                "example": "await skills.placeBlock(bot, 'cobblestone', 100, 64, 200, 'top', false);"
+                "example": "let pos = world.getPosition(bot); await skills.placeBlock(bot, 'stone', pos.x + 2, pos.y, pos.z, 'bottom', false);"
             },
             "activateNearestBlock": {
-                "params": ["block_type"],
+                "params": ["type"],
                 "description": "Activate nearest block (button, lever, etc.)",
                 "returns": "boolean (success)",
                 "example": "await skills.activateNearestBlock(bot, 'lever');"
             },
             
             # Inventory & Storage
-            "equipItem": {
-                "params": ["item_name"],
-                "description": "Equip an item from inventory",
+            "equip": {
+                "params": ["itemName"],
+                "description": "Equip an item from inventory to proper body part (hand, head, torso, legs, feet) automatically",
                 "returns": "boolean (success)",
-                "example": "await skills.equipItem(bot, 'diamond_sword');"
+                "example": "await skills.equip(bot, 'diamond_sword');"
             },
             "discard": {
-                "params": ["item_name", "num"],
+                "params": ["itemName", "num"],
                 "description": "Discard items from inventory",
                 "returns": "boolean (success)",
                 "example": "await skills.discard(bot, 'dirt', 64);"
             },
             "putInChest": {
-                "params": ["item_name", "num"],
+                "params": ["itemName", "num"],
                 "description": "Put items into nearest chest",
                 "returns": "boolean (success)",
                 "example": "await skills.putInChest(bot, 'dirt', 64);"
             },
             "takeFromChest": {
-                "params": ["item_name", "num"],
+                "params": ["itemName", "num"],
                 "description": "Take items from nearest chest",
                 "returns": "boolean (success)",
                 "example": "await skills.takeFromChest(bot, 'iron_ingot', 10);"
@@ -200,7 +200,7 @@ class SkillLibrary:
             
             # Survival
             "consume": {
-                "params": ["item_name"],
+                "params": ["itemName"],
                 "description": "Eat food or drink potion",
                 "returns": "boolean (success)",
                 "example": "await skills.consume(bot, 'bread');"
@@ -214,19 +214,13 @@ class SkillLibrary:
             
             # Farming
             "tillAndSow": {
-                "params": ["x", "y", "z", "seed_type"],
+                "params": ["x", "y", "z", "seedType"],
                 "description": "Till ground and plant seeds",
                 "returns": "boolean (success)",
                 "example": "await skills.tillAndSow(bot, 100, 64, 200, 'wheat_seeds');"
             },
             
             # Interaction
-            "useBlock": {
-                "params": ["block"],
-                "description": "Use/interact with a block",
-                "returns": "boolean (success)",
-                "example": "await skills.useBlock(bot, door);"
-            },
             "useDoor": {
                 "params": ["door_pos"],
                 "description": "Use/open door",
@@ -234,7 +228,7 @@ class SkillLibrary:
                 "example": "await skills.useDoor(bot);"
             },
             "giveToPlayer": {
-                "params": ["item_type", "username", "num"],
+                "params": ["itemType", "username", "num"],
                 "description": "Give items to player",
                 "returns": "boolean (success)",
                 "example": "await skills.giveToPlayer(bot, 'diamond', 'Steve', 5);"
@@ -242,13 +236,13 @@ class SkillLibrary:
             
             # Villager trading
             "showVillagerTrades": {
-                "params": ["villager_id"],
+                "params": ["id"],
                 "description": "Show available trades from villager",
                 "returns": "string (trade list)",
                 "example": "await skills.showVillagerTrades(bot, '12345');"
             },
             "tradeWithVillager": {
-                "params": ["villager_id", "trade_index", "count"],
+                "params": ["id", "index", "count"],
                 "description": "Trade with villager",
                 "returns": "boolean (success)",
                 "example": "await skills.tradeWithVillager(bot, '12345', 0, 1);"
@@ -270,13 +264,13 @@ class SkillLibrary:
             
             # Tool usage
             "useToolOn": {
-                "params": ["tool_name", "target_name"],
+                "params": ["toolName", "targetName"],
                 "description": "Use tool on target",
                 "returns": "boolean (success)",
                 "example": "await skills.useToolOn(bot, 'shears', 'sheep');"
             },
             "useToolOnBlock": {
-                "params": ["tool_name", "block"],
+                "params": ["toolName", "block"],
                 "description": "Use tool on specific block",
                 "returns": "boolean (success)",
                 "example": "await skills.useToolOnBlock(bot, 'diamond_axe', log);"
@@ -289,20 +283,14 @@ class SkillLibrary:
                 "returns": "boolean (true if completed, false if interrupted)",
                 "example": "await skills.wait(bot, 5000);"
             },
-            "lookAtPlayer": {
-                "params": ["username"],
-                "description": "Look at a player",
-                "returns": "void",
-                "example": "await skills.lookAtPlayer(bot, 'steve');"
-            },
-            "lookAtPosition": {
-                "params": ["x", "y", "z"],
-                "description": "Look at specific coordinates",
-                "returns": "void",
-                "example": "await skills.lookAtPosition(bot, 100, 64, 200);"
+            "goToGoal": {
+                "params": ["goal"],
+                "description": "Navigate to the given pathfinder goal using optimized movements",
+                "returns": "boolean (success)",
+                "example": "await skills.goToGoal(bot, new pf.goals.GoalNear(100, 64, 200, 1));"
             },
             "log": {
-                "params": ["bot", "message"],
+                "params": ["message"],
                 "description": "Log a message (use instead of console.log)",
                 "returns": "void",
                 "example": "log(bot, 'Task completed!');"
@@ -412,14 +400,13 @@ class SkillLibrary:
             'make': ['craftRecipe', 'placeBlock'],
             'build': ['placeBlock'],
             'place': ['placeBlock'],
-            'look': ['lookAtPlayer', 'lookAtPosition'],
             'follow': ['followPlayer'],
             'avoid': ['avoidEnemies', 'moveAway', 'moveAwayFromEntity'],
             'eat': ['consume'],
             'food': ['consume'],
             'sleep': ['goToBed'],
             'bed': ['goToBed'],
-            'equip': ['equipItem'],
+            'equip': ['equip'],
             'chest': ['putInChest', 'takeFromChest', 'viewChest'],
             'store': ['putInChest'],
             'storage': ['putInChest', 'takeFromChest'],
@@ -456,6 +443,19 @@ class SkillLibrary:
 WORLD_FUNCTIONS = """
 ## World Query Functions (use with world.functionName(bot, ...))
 
+### world.getPosition(bot)
+Get bot's current ABSOLUTE position in world coordinates
+Returns: {x, y, z} (absolute world coordinates)
+Example: let pos = world.getPosition(bot);  // Returns {x: 587, y: 72, z: 121}
+
+### world.getBlockAtPosition(bot, x, y, z)
+Get block at RELATIVE offset from bot's current position
+Parameters: x, y, z are RELATIVE offsets (NOT absolute world coordinates!)
+Returns: Block object {name, position, ...}
+Example: let blockBelow = world.getBlockAtPosition(bot, 0, -1, 0);  // Block directly below
+Example: let blockNorth2 = world.getBlockAtPosition(bot, 0, 0, -2);  // 2 blocks north
+WARNING: Do NOT use absolute coords like world.getBlockAtPosition(bot, 587, 72, 121)!
+
 ### world.getNearestBlock(bot, block_type, max_distance=16)
 Find nearest block of a specific type
 Returns: Block object or null
@@ -470,11 +470,6 @@ Example: let cow = world.getNearestEntityWhere(bot, e => e.name === 'cow', 16);
 Get all nearby entities
 Returns: Array of entities
 Example: let entities = world.getNearbyEntities(bot, 20);
-
-### world.getPosition(bot)
-Get bot's current position
-Returns: {x, y, z}
-Example: let pos = world.getPosition(bot);
 
 ### world.getBiomeName(bot)
 Get current biome name
@@ -495,6 +490,24 @@ Example: let players = world.getNearbyPlayers(bot, 20);
 Get list of nearest blocks of specified types
 Returns: Array of block positions
 Example: let trees = world.getNearestBlocks(bot, ['oak_log', 'birch_log'], 30);
+
+### world.getNearestBlocksWhere(bot, predicate, distance=8, count=10000)
+Get blocks matching predicate function
+Returns: Array of Block objects
+Example: let waterBlocks = world.getNearestBlocksWhere(bot, block => block.name === 'water', 16, 10);
+Note: More flexible than getNearestBlocks - use custom predicate function
+
+### world.getVillagerProfession(entity)
+Get villager's profession from entity
+Returns: string (profession name like 'Farmer', 'Librarian', 'Unemployed', etc.)
+Example: let villager = world.getNearestEntityWhere(bot, e => e.name === 'villager', 16);
+         let job = world.getVillagerProfession(villager);
+
+### async world.isClearPath(bot, target)
+Check if there's a clear path to target without digging/placing blocks
+Returns: boolean (true if path exists without obstacles)
+Example: let canReach = await world.isClearPath(bot, targetEntity);
+WARNING: This is async - must use await!
 
 ### world.shouldPlaceTorch(bot)
 Check if it's dark enough to place torch

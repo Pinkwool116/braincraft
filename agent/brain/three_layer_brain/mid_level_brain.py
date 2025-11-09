@@ -9,8 +9,6 @@ Responsible for:
 - Learning from failures and successes
 """
 
-import re
-import json
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional
@@ -21,6 +19,7 @@ from data_manager.memory_manager import MemoryManager
 from data_manager.chat_manager import ChatManager
 from prompts.prompt_logger import PromptLogger
 from prompts.prompt_manager import PromptManager
+from utils.json_parser import parse_code_generation_response, parse_chat_response
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +78,8 @@ class MidLevelBrain:
         self.is_executing = False
         self.is_waiting_for_guidance = False  # Waiting for high-level response
         
-        # Coordinator reference (set by coordinator after initialization)
         self.coordinator = None
+        self.exec_coordinator = None
         
         # Bot ready state tracking (to avoid spam)
         self._waiting_for_bot = False
@@ -144,7 +143,33 @@ class MidLevelBrain:
         current_step = steps[current_step_index]
         step_status = current_step.get('status', 'pending')
         
+        # Handle failed steps: 
+        # If a step previously failed (e.g., from a previous session), we should:
+        # 1. Request high-level brain intervention to decide next action
+        # 2. OR reset to pending if no modification was requested yet
+        if step_status == 'failed':
+            # Check if we've already requested modification for this failure
+            if not current_step.get('modification_requested'):
+                logger.warning(f"⚠️ Step {current_step_index + 1} previously failed - requesting high-level brain intervention")
+                # Request modification from high-level brain
+                failures = current_step.get('failures', [])
+                await self._request_modification(
+                    request_type='stuck_task',
+                    step_index=current_step_index,
+                    reason=f"Step failed in previous session ({len(failures)} attempts)",
+                    failures=failures
+                )
+                # Mark that we've requested modification to avoid spamming
+                current_step['modification_requested'] = True
+                return  # Wait for high-level brain to process
+            else:
+                # Already requested modification, waiting for high-level response
+                logger.debug(f"Step {current_step_index + 1} failed - waiting for high-level brain intervention")
+                return
+        
+        # Don't execute if step is already completed
         if step_status == 'completed':
+            logger.debug(f"Step {current_step_index + 1} already completed - waiting for high-level brain to move to next step")
             return
         
         # Check if bot is ready BEFORE logging execution
@@ -184,16 +209,20 @@ class MidLevelBrain:
         # Log execution AFTER confirming bot is ready
         logger.info(f"Executing task plan step {current_step_index + 1}/{len(steps)}: {current_step['description']}")
         
-        # Mark step as in_progress
+        # Mark step as in_progress and clear any previous flags
         if step_status == 'pending':
             await self._update_step_status(current_step_index, 'in_progress')
+        
+        # Clear modification_requested flag when starting execution
+        if 'modification_requested' in current_step:
+            del current_step['modification_requested']
         
         # Execute the step (similar to self-prompter loop)
         self.is_executing = True
         await self.shared_state.update('is_executing', True)  # Sync to shared state
         
         try:
-            success = await self._execute_step_with_retry(current_step)
+            success = await self._execute_step_with_retry(current_step, current_step_index)
             
             if success:
                 # Step succeeded
@@ -223,17 +252,10 @@ class MidLevelBrain:
                         }
                     )
             else:
-                # Step failed after retries
-                logger.warning(f"Step {current_step_index + 1} failed after multiple attempts")
+                # Step failed - LLM has already requested modification or safety limit reached
+                logger.warning(f"Step {current_step_index + 1} execution stopped (modification requested or limit reached)")
                 await self._update_step_status(current_step_index, 'failed')
                 
-                # Request guidance from high-level
-                await self._request_modification(
-                    'stuck_task',
-                    step_index=current_step_index,
-                    reason="Failed after multiple attempts",
-                    failures=current_step.get('failures', [])
-                )
         
         except asyncio.CancelledError:
             # Step was interrupted by higher priority action
@@ -254,80 +276,134 @@ class MidLevelBrain:
 
         await self.high_brain.update_active_task_step(step_index, status, failure_reason)
     
-    async def _execute_step_with_retry(self, step: Dict[str, Any], max_attempts: int = 5) -> bool:
+    async def _update_step_failures(self, step_index: int, failures: List[Dict[str, Any]]):
+        """Update the failures list of a step and persist to storage."""
+        active_task = await self.shared_state.get('active_task')
+        if not active_task:
+            return
+        
+        steps = active_task.get('steps', [])
+        if 0 <= step_index < len(steps):
+            steps[step_index]['failures'] = failures
+            # Notify high-level brain to save
+            self.high_brain.task_stack_manager.persistence.save_state(
+                self.high_brain.task_stack_manager.task_stack
+            )
+            logger.debug(f"Updated step {step_index} failures: {len(failures)} total")
+    
+    async def _execute_step_with_retry(self, step: Dict[str, Any], step_index: int) -> bool:
         """
-        Execute a step with retry mechanism (similar to self-prompter)
+        Execute a step with retry mechanism and intelligent reflection.
+        Model decides when to request modification based on analysis.
         
         Args:
             step: Step dictionary
-            step_index: Step index
-            max_attempts: Maximum attempts
+            step_index: Index of the step in the task plan (0-indexed)
         
         Returns:
             True if successful, False otherwise
         """
-        failures = []
+        # Resume from previous failures if any
+        existing_failures = step.get('failures', [])
+        failures = existing_failures.copy() if existing_failures else []
         
-        for attempt in range(max_attempts):
-            logger.info(f"Attempt {attempt + 1}/{max_attempts} for step: {step['description']}")
+        # Start attempt from the last failure + 1, or from 1 if no previous failures
+        attempt = len(failures)
+        
+        # No hard limit - let model decide when to request modification
+        # Soft limit of 20 for safety (log warning if exceeded)
+        while True:
+            attempt += 1
+            
+            # Safety check: log warning if too many attempts
+            if attempt > 10:
+                logger.warning(f"⚠️ Step has been attempted {attempt} times - model should consider requesting modification")
+            if attempt > 20:
+                logger.error(f"❌ Step exceeded 20 attempts - forcing modification request")
+                await self._request_modification(
+                    request_type='stuck_task',
+                    step_index=step_index,
+                    reason=f"Exceeded maximum retry limit ({attempt} attempts)",
+                    failures=failures
+                )
+                return False
+            
+            logger.info(f"Attempt {attempt} for step: {step['description']}")
             
             try:
-                # use ExecutionCoordinator
-                if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-                    result = await self.exec_coordinator.execute_action(
-                        layer='mid',
-                        label=f'task:{step["description"][:30]}',
-                        action_fn=lambda: self._execute_task_internal({'description': step['description']}),
-                        can_interrupt=['low_reflex', 'low_mode', 'unstuck'],
-                        auto_resume=True
-                    )
-                    
-                    if result.get('blocked'):
-                        logger.debug("Task execution blocked by higher priority action")
-                        return False
-                    
-                    # Handle cancellation - will be resumed later
-                    if result.get('cancelled'):
-                        logger.info("⚠️ Task was cancelled by higher priority action - will resume")
-                        raise asyncio.CancelledError("Task interrupted by higher priority action")
-                    
-                    # Check the actual execution result from action_fn
-                    # ExecutionCoordinator wraps the return value in result['result']
-                    task_success = result.get('result', False)
-                    
-                    # Also check if there was an error in the wrapper
-                    if result.get('error'):
-                        error_msg = result.get('error', 'Unknown error')
-                        success = False
-                    else:
-                        success = task_success
-                        error_msg = 'Task returned False' if not success else ''
+                result = await self.exec_coordinator.execute_action(
+                    layer='mid',
+                    label=f'task:{step["description"][:30]}',
+                    action_fn=lambda a=attempt, f=failures, s=step, idx=step_index: self._execute_step_by_code_generation(
+                        step=s,
+                        step_index=idx,
+                        attempt=a,
+                        failures=f.copy()
+                    ),
+                    can_interrupt=['low_reflex', 'low_mode', 'unstuck'],
+                    auto_resume=True
+                )
+                
+                if result.get('blocked'):
+                    logger.debug("Task execution blocked by higher priority action")
+                    return False
+                
+                # Handle cancellation - will be resumed later
+                if result.get('cancelled'):
+                    logger.info("⚠️ Task was cancelled by higher priority action - will resume")
+                    raise asyncio.CancelledError("Task interrupted by higher priority action")
+                
+                # Check for modification request flag set by _execute_step_by_code_generation
+                if step.get('modification_requested'):
+                    # Model requested modification, stop retrying
+                    logger.info("Model requested modification, exiting retry loop")
+                    # Clear the flag immediately after detecting it to avoid affecting future logic
+                    del step['modification_requested']
+                    return False
+                
+                # Check the actual execution result from action_fn
+                task_success = result.get('result', False)
+                
+                # Also check if there was an error in the wrapper
+                if result.get('error'):
+                    error_msg = result.get('error', 'Unknown error')
+                    success = False
                 else:
-                    success, error_msg = await self._execute_task({'description': step['description']})
+                    success = task_success
+                    # Get detailed error from task's last_error field
+                    error_msg = step.get('last_error', 'Task returned False') if not success else ''
                 
                 if success:
                     return True
                 else:
-                    failures.append(error_msg)
-                    logger.warning(f"Attempt {attempt + 1} failed: {error_msg}")
+                    # Create detailed failure record
+                    failure_record = {
+                        'attempt': attempt,
+                        'error': error_msg,
+                        'code': step.get('last_code', None)  # Will be set by _execute_step_by_code_generation
+                    }
+                    failures.append(failure_record)
+                    logger.warning(f"Attempt {attempt} failed: {error_msg}")
                     
-                    # Store failures in step
                     step['failures'] = failures
+                    await self._update_step_failures(step_index, failures)
             
             except asyncio.CancelledError:
                 # Task was interrupted by higher priority action
                 # Don't count as failure, re-raise to propagate cancellation
-                logger.info(f"⚠️ Attempt {attempt + 1} was interrupted by higher priority action")
+                logger.info(f"⚠️ Attempt {attempt} was interrupted by higher priority action")
                 raise
             
             except Exception as e:
-                logger.error(f"Error in attempt {attempt + 1}: {e}", exc_info=True)
-                failures.append(str(e))
-        
-        # All attempts failed
-        logger.error(f"Step failed after {max_attempts} attempts")
-        step['failures'] = failures
-        return False
+                logger.error(f"Error in attempt {attempt}: {e}", exc_info=True)
+                failure_record = {
+                    'attempt': attempt,
+                    'error': f"Exception: {str(e)}",
+                    'code': step.get('last_code', None)
+                }
+                failures.append(failure_record)
+                step['failures'] = failures
+                await self._update_step_failures(step_index, failures)
     
     async def _request_modification(
         self,
@@ -336,13 +412,25 @@ class MidLevelBrain:
         reason: str = "",
         failures: Optional[List[str]] = None,
         player_name: Optional[str] = None,
-        directive: Optional[str] = None
+        directive: Optional[str] = None,
+        suggestion: str = "",
+        mid_level_analysis: Optional[Dict[str, Any]] = None
     ):
         """
         Request guidance or a new task from the high-level brain.
         
         Mid-level brain only reports problems and player directives.
         High-level brain decides what action to take.
+        
+        Args:
+            request_type: Type of request ('stuck_task' or 'player_directive')
+            step_index: Index of the failed step (0-indexed, for stuck_task)
+            reason: Reason for the request
+            failures: List of failure messages
+            player_name: Name of the player (for player_directive)
+            directive: Player directive text
+            suggestion: Suggestion from mid-level brain (optional)
+            mid_level_analysis: Analysis from mid-level brain (optional)
         """
         logger.info("Requesting high-level guidance: %s", request_type)
 
@@ -370,7 +458,9 @@ class MidLevelBrain:
             request.update({
                 'current_step_index': step_index,
                 'failures': failures or [],
-                'context': f"Attempted {len(failures or [])} times"
+                'context': f"Attempted {len(failures or [])} times",
+                'suggestion': suggestion,  # Add suggestion field
+                'mid_level_analysis': mid_level_analysis  # Add analysis field
             })
         elif request_type == 'player_directive':
             request.update({
@@ -403,6 +493,27 @@ class MidLevelBrain:
         player_name = response.get('player_name')
 
         logger.info("High-level decision: %s (%s)", decision, explanation or guidance)
+        task_plan = await self.shared_state.get('active_task')
+        if task_plan and task_plan.get('steps'):
+            current_idx = task_plan.get('current_step_index', 0)
+            steps = task_plan.get('steps', [])
+            if 0 <= current_idx < len(steps):
+                current_step = steps[current_idx]
+                if 'modification_requested' in current_step:
+                    del current_step['modification_requested']
+                    logger.debug(f"Cleared modification_requested flag from step {current_idx + 1}")
+                
+                # Reset failed steps to pending based on high-level decision
+                if current_step.get('status') == 'failed':
+                    if decision == 'pushed_sub_task':
+                        # Sub-task was added - reset to pending to retry after sub-task completes
+                        current_step['status'] = 'pending'
+                        logger.info(f"Reset step {current_idx + 1} to 'pending' - will retry after sub-task completes")
+                    elif decision == 'no_change':
+                        # High-level says to continue trying - reset to pending
+                        current_step['status'] = 'pending'
+                        logger.info(f"Reset step {current_idx + 1} to 'pending' - high-level says continue trying")
+                    # For 'updated_task' and 'discarded_task', the task/step will be replaced/removed anyway
 
         if player_message and player_name:
             await self._send_chat_response(player_message, player_name)
@@ -434,33 +545,33 @@ class MidLevelBrain:
             # Treat as guidance only
             logger.info("Guidance from high-level: %s", guidance)
     
-    async def _execute_task(self, task: Dict[str, Any]) -> tuple:
+    async def _execute_step_by_code_generation(
+        self,
+        step: Dict[str, Any],
+        step_index: int,
+        attempt: int = 1,
+        failures: Optional[List[str]] = None
+    ) -> bool:
         """
-        Execute a task (return tuple)
+        Execute a task step by generating code and sending to JavaScript.
+        Uses LLM with reflection capability to decide between retrying and requesting help.
+        
+        This method is called once per retry attempt by _execute_step_with_retry.
+        It generates code, executes it, and returns success/failure.
         
         Args:
-            task: Task dictionary
-        
-        Returns:
-            (success: bool, error_msg: str)
-        """
-        result = await self._execute_task_internal(task)
-        if isinstance(result, dict):
-            return result.get('success', False), result.get('error', 'Unknown error')
-        return result
-    
-    async def _execute_task_internal(self, task: Dict[str, Any]) -> bool:
-        """
-        Execute a task by generating code and sending to JavaScript
-        Uses retry mechanism similar to original Coder class
-        
-        Args:
-            task: Task dictionary
+            step: Step dictionary from the task plan
+            step_index: Index of the step in the task plan (0-indexed)
+            attempt: Current attempt number (1-indexed)
+            failures: List of previous failure messages
         
         Returns:
             True if successful, False otherwise
         """
-        logger.debug(f"Executing task: {task.get('description')}")
+        if failures is None:
+            failures = []
+            
+        logger.debug(f"Executing step (attempt {attempt}): {step.get('description')}")
         
         # Request fresh game state BEFORE code generation
         # This ensures the LLM has the latest inventory, position, etc.
@@ -469,158 +580,169 @@ class MidLevelBrain:
         # Get current game state (now up-to-date)
         state = await self.shared_state.get_all()
         
-        # Build message history for code generation
+        # Build conversation history (empty for now, can be extended later)
         messages = []
         
-        # Add task context
-        task_description = task.get('description', 'No description')
-        messages.append({
-            'role': 'system',
-            'content': f'Code generation started. Task: {task_description}'
-        })
+        step_description = step.get('description', 'No description')
         
-        MAX_ATTEMPTS = 5
-        MAX_NO_CODE_FAILURES = 3
-        no_code_failures = 0
-        
-        for attempt in range(MAX_ATTEMPTS):
-            logger.info(f"Code generation attempt {attempt + 1}/{MAX_ATTEMPTS}")
+        try:
+            # Prepare prompt for code generation with attempt/failures context
+            prompt = await self._prepare_code_generation_prompt(
+                step, state, messages, attempt=attempt, failures=failures
+            )
             
+            # Log prompt before sending
+            prompt_file = self.prompt_logger.log_prompt(
+                prompt=prompt,
+                brain_layer="mid",
+                prompt_type="code_generation",
+                metadata={
+                    "step_description": step_description,
+                    "attempt": attempt
+                }
+            )
+            logger.debug(f"Code generation prompt saved to: {prompt_file}")
+            
+            # Generate code using LLM
+            response = await self.llm.send_request([], prompt)
+            
+            self.prompt_logger.update_response(prompt_file, response)
+            
+            # Try to parse JSON response (new reflection format)
             try:
-                # Refresh state before each retry attempt (inventory may have changed)
-                if attempt > 0:
-                    await self._refresh_game_state()
-                    state = await self.shared_state.get_all()
+                parsed = parse_code_generation_response(response)
+                self._validate_code_generation_response(parsed)
                 
-                # Prepare prompt for code generation
-                prompt = await self._prepare_code_generation_prompt(task, state, messages)
+                analysis = parsed.get('analysis', '')
+                decision = parsed.get('decision', 'continue')
+                modification_request = parsed.get('modification_request', '')
+                code_from_json = parsed.get('code', '')
                 
-                # Log prompt before sending
-                prompt_file = self.prompt_logger.log_prompt(
-                    prompt=prompt,
-                    brain_layer="mid",
-                    prompt_type="code_generation",
-                    metadata={
-                        "task_description": task_description,
-                        "attempt": attempt + 1,
-                        "max_attempts": MAX_ATTEMPTS
-                    }
-                )
-                logger.debug(f"Code generation prompt saved to: {prompt_file}")
+                logger.info(f"LLM Analysis: {analysis}")
+                logger.info(f"LLM Decision: {decision}")
                 
-                # Generate code using LLM
-                response = await self.llm.send_request([], prompt)
-                
-                self.prompt_logger.update_response(prompt_file, response)
-                
-                # Check if response contains code
-                if '```' not in response:
-                    # No code block found
-                    if no_code_failures >= MAX_NO_CODE_FAILURES:
-                        logger.error("Agent refused to write code after multiple attempts")
-                        task['last_error'] = "Agent would not write code"
-                        return False
+                # Handle decision to request modification
+                if decision == 'request_modification':
+                    logger.warning(f"LLM requests modification: {modification_request}")
                     
-                    messages.append({
-                        'role': 'assistant',
-                        'content': response
-                    })
-                    messages.append({
-                        'role': 'system',
-                        'content': 'Error: no code provided. Write code in codeblock in your response. ``` // example ```'
-                    })
-                    no_code_failures += 1
-                    logger.warning("No code block generated, retrying...")
-                    continue
-                
-                # Extract code from response
-                code = self._extract_code(response)
-                
-                if not code:
-                    logger.error("Failed to extract code from response")
-                    task['last_error'] = "No code extracted"
-                    return False
-                
-                logger.info(f"Generated code:\n{code}")
-                
-                # Validate code (basic checks)
-                validation_error = await self._validate_code(code)
-                if validation_error:
-                    logger.warning(f"Code validation error: {validation_error}")
-                    messages.append({
-                        'role': 'assistant',
-                        'content': response
-                    })
-                    messages.append({
-                        'role': 'system',
-                        'content': f'Code validation error:\n{validation_error}\nPlease fix and try again.'
-                    })
-                    continue
-                
-                # Inject interrupt checks into code
-                code = self._inject_interrupt_checks(code)
-                
-                # Send code to JavaScript for execution
-                result = await self._send_code_to_javascript(code)
-                await self._refresh_game_state()
-                
-                # Check execution result
-                if result.get('success'):
-                    # Success! Log output and return
-                    output = result.get('message', 'Code executed successfully')
-                    logger.info(f"Task completed: {output}")
-                    
-                    # Add to memory
-                    self.memory.add_short_term_memory(
-                        'task_success',
-                        f"Task: {task.get('description')}",
-                        {'output': output}
+                    # Request help from high-level brain
+                    await self._request_modification(
+                        request_type='stuck_task',
+                        step_index=step_index,
+                        reason=modification_request,
+                        failures=failures,
+                        suggestion=modification_request,
+                        mid_level_analysis={'analysis': analysis, 'decision': decision}
                     )
                     
-                    return True
+                    # Set flag to exit retry loop
+                    step['modification_requested'] = True
+                    return False
                 
-                # If code throws an error, result.get('success') will be false
-                # The JS bridge now propagates the error correctly
-                error_msg = result.get('message', 'Unknown error during execution')
-                logger.warning(f"Code execution failed: {error_msg}")
+                # Decision is 'continue' - extract code from JSON
+                # The code field may contain markdown markers, so extract the actual code
+                code = self._extract_code_from_field(code_from_json)
                 
-                # Add to memory
+            except ValueError as e:
+                # JSON parsing failed - LLM didn't follow the format
+                # Provide detailed error message for debugging
+                error_msg = f"LLM response format error: {str(e)}"
+                
+                # Include response snippet in error for better debugging
+                response_snippet = response[:500] if len(response) > 500 else response
+                detailed_error = f"{error_msg}\n\nResponse snippet:\n{response_snippet}"
+                
+                logger.warning(error_msg)
+                logger.debug(f"Full response that failed to parse:\n{response}")
+                
+                # Store detailed error for failure tracking
+                step['last_error'] = detailed_error
+                step['last_code'] = None  # No code was generated
+                return False
+            
+            if not code:
+                logger.error("Failed to extract code from response")
+                step['last_error'] = "No code extracted"
+                return False
+            
+            logger.info(f"Generated code:\n{code}")
+            
+            # Save the generated code to step for failure tracking
+            step['last_code'] = code
+            
+            validation_error = await self._validate_code(code)
+            if validation_error:
+                logger.warning(f"Code validation error: {validation_error}")
+                step['last_error'] = f"Code validation failed: {validation_error}"
+                return False
+            
+            code = self._inject_interrupt_checks(code)
+            result = await self._send_code_to_javascript(code)
+            await self._refresh_game_state()
+            
+            if result.get('success'):
+                output = result.get('message', 'Code executed successfully')
+                logger.info(f"Step completed: {output}")
+                
                 self.memory.add_short_term_memory(
-                    'code_execution_failed',
-                    f"Task: {task.get('description')} - Error: {error_msg}",
-                    {'error': error_msg, 'code': code}
+                    'step_success',
+                    f"Step: {step.get('description')}",
+                    {'output': output}
                 )
                 
-                messages.append({
-                    'role': 'assistant',
-                    'content': response
-                })
-                messages.append({
-                    'role': 'system',
-                    'content': f'CODE EXECUTION ERROR: {error_msg}\nPlease analyze the error and try again.'
-                })
-                # Continue to next attempt
+                return True
             
-            except Exception as e:
-                logger.error(f"Error in code generation attempt: {e}", exc_info=True)
-                messages.append({
-                    'role': 'system',
-                    'content': f'Error during code generation: {str(e)}\nPlease try again.'
-                })
+            error_msg = result.get('message', 'Unknown error during execution')
+            logger.warning(f"Code execution failed: {error_msg}")
+            
+            self.memory.add_short_term_memory(
+                'code_execution_failed',
+                f"Step: {step.get('description')} - Error: {error_msg}",
+                {'error': error_msg, 'code': code}
+            )
+            
+            step['last_error'] = error_msg
+            return False
         
-        # All attempts failed
-        logger.error(f"Code generation failed after {MAX_ATTEMPTS} attempts")
-        task['last_error'] = f'Code generation failed after {MAX_ATTEMPTS} attempts'
-        return False
+        except Exception as e:
+            logger.error(f"Error in code generation: {e}", exc_info=True)
+            step['last_error'] = f"Exception during code generation: {str(e)}"
+            return False
     
-    async def _prepare_code_generation_prompt(self, task: Dict[str, Any], state: Dict[str, Any], conversation_history: List[Dict[str, str]] = None) -> str:
+    def _validate_code_generation_response(self, parsed: Dict[str, Any]) -> None:
+        """
+        Validate code generation response fields.
+        
+        Args:
+            parsed: Parsed code generation response JSON
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        decision = parsed.get('decision')
+        if decision not in ['continue', 'request_modification']:
+            raise ValueError(
+                f"Invalid decision value: {decision}. "
+                "Must be 'continue' or 'request_modification'"
+            )
+    
+    async def _prepare_code_generation_prompt(
+        self,
+        step: Dict[str, Any],
+        state: Dict[str, Any],
+        conversation_history: List[Dict[str, str]] = None,
+        attempt: int = 1,
+        failures: Optional[List[str]] = None
+    ) -> str:
         """
         Prepare prompt for code generation with conversation history
         
         Args:
-            task: Task to generate code for
+            step: Step to generate code for
             state: Current game state
             conversation_history: Previous attempts and errors
+            attempt: Current attempt number (1-indexed)
+            failures: List of previous failure messages
         
         Returns:
             Formatted prompt string
@@ -628,8 +750,41 @@ class MidLevelBrain:
         # Get current game state
         state = await self.shared_state.get_all()
         
-        # Get task description
-        task_description = task.get('description', 'No description')
+        # Get step description
+        step_description = step.get('description', 'No description')
+        
+        # Prepare execution context for prompt injection
+        execution_context = f"This is attempt #{attempt}"
+        if failures:
+            execution_context += f"\n\nPrevious failures ({len(failures)} total):\n"
+            for i, failure in enumerate(failures, 1):
+                # Handle both old string format and new dict format
+                if isinstance(failure, dict):
+                    execution_context += f"\nAttempt #{failure.get('attempt', i)}:\n"
+                    execution_context += f"  Error: {failure.get('error', 'Unknown error')}\n"
+                    if failure.get('code'):
+                        # Truncate code if too long
+                        code_snippet = failure['code']
+                        execution_context += f"  Code that failed:\n{code_snippet}\n"
+                else:
+                    # Old format: just a string
+                    execution_context += f"{i}. {failure}\n"
+        
+        # Format failure_history for the prompt template
+        failure_history_text = ""
+        if failures:
+            for i, failure in enumerate(failures, 1):
+                if isinstance(failure, dict):
+                    failure_history_text += f"Attempt {failure.get('attempt', i)}: {failure.get('error', 'Unknown')}\n"
+                else:
+                    failure_history_text += f"{i}. {failure}\n"
+        else:
+            failure_history_text = "No previous failures"
+        
+        # Get task source and player info
+        active_task = await self.shared_state.get('active_task')
+        task_source = active_task.get('source', 'internal') if active_task else 'internal'
+        player_name = active_task.get('player_name') if active_task else None
         
         # Use PromptManager to render code generation prompt
         # All variables auto-resolved from config (including $CODE_DOCS)
@@ -640,7 +795,12 @@ class MidLevelBrain:
                 'memory_manager': self.memory,
                 'task_stack_manager': self.shared_state,
                 'examples': "",  # Empty for now
-                'task': task_description
+                'task': step_description,
+                'attempt': str(attempt),
+                'failure_history': failure_history_text,
+                'execution_context': execution_context,
+                'task_source': task_source,
+                'player_name': player_name or 'N/A'
             }
         )
         
@@ -669,9 +829,11 @@ class MidLevelBrain:
         """
         errors = []
         
-        # Check for await statements (code must be async)
-        if 'await ' not in code:
-            errors.append("Code must contain at least one 'await' statement for async operations")
+        # Check for await statements (code should be async for most operations)
+        # Note: We relax this check because some simple synchronous operations are valid
+        # The wrapping function is async anyway, so it's fine
+        # if 'await ' not in code:
+        #     errors.append("Code must contain at least one 'await' statement for async operations")
         
         # Check for forbidden patterns
         forbidden_patterns = {
@@ -693,7 +855,6 @@ class MidLevelBrain:
             errors.append("Do not use 'log' as a variable name - it's a reserved function. Use 'logBlock', 'oakLog', etc.")
         
         # Check for skills/world function calls
-        import re
         skill_pattern = r'(?:skills|world)\.(\w+)\('
         matches = re.findall(skill_pattern, code)
         
@@ -710,30 +871,47 @@ class MidLevelBrain:
         
         return None
     
-    def _extract_code(self, response: str) -> Optional[str]:
+    def _extract_code_from_field(self, text: str) -> Optional[str]:
         """
-        Extract code from LLM response
+        Extract JavaScript code from text that may or may not contain markdown code blocks.
+        
+        This handles both formats:
+        1. Code wrapped in ```javascript or ```js or ``` markers
+        2. Plain code without markers
         
         Args:
-            response: LLM response text
+            text: Text that may contain code (from JSON field or full response)
         
         Returns:
-            Extracted code or None
+            Extracted JavaScript code or None if no valid code found
         """
-        # Look for code blocks
-        if '```' in response:
-            # Find code between ``` markers
-            parts = response.split('```')
+        if not text or not text.strip():
+            return None
+        
+        text = text.strip()
+        
+        # Check if text contains markdown code blocks
+        if '```' in text:
+            # Extract code from markdown blocks
+            parts = text.split('```')
             for i, part in enumerate(parts):
                 if i % 2 == 1:  # Odd indices are code blocks
-                    # Remove language identifier if present
                     code = part.strip()
+                    # Remove language identifier if present
                     if code.startswith('javascript') or code.startswith('js'):
-                        code = code.split('\n', 1)[1] if '\n' in code else code
-                    return code.strip()
-        
-        logger.warning("No code block found in response")
-        return None
+                        # Split by newline and take everything after language identifier
+                        lines = code.split('\n', 1)
+                        code = lines[1] if len(lines) > 1 else ''
+                    
+                    code = code.strip()
+                    if code:  # Found non-empty code
+                        return code
+            
+            # No valid code found in markdown blocks
+            logger.warning("Found ``` markers but no valid code block")
+            return None
+        else:
+            return text
     
     def _inject_interrupt_checks(self, code: str) -> str:
         """
@@ -797,7 +975,7 @@ class MidLevelBrain:
             })
             
             # Wait for execution result (with timeout)
-            timeout = 30  # 30 seconds timeout
+            timeout = 120  # 120 seconds timeout
             start_time = asyncio.get_event_loop().time()
             poll_interval = 0.1  # Check every 100ms
             
@@ -956,42 +1134,28 @@ class MidLevelBrain:
             # DEBUG: Log raw LLM response
             logger.debug(f"LLM raw response: {response_text[:300]}")
             
-            # Extract and parse JSON
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                json_str = json_match.group(0)
-                result = json.loads(json_str)
-            else:
-                logger.warning(f"Could not parse JSON from LLM response: {response_text[:200]}")
+            # Parse JSON using robust parser
+            try:
+                result = parse_chat_response(response_text)
+            except ValueError as e:
+                logger.error(f"Failed to parse chat response: {e}")
+                logger.debug(f"Response was: {response_text[:500]}")
                 result = {
-                    'message': response_text,
-                    'task': None
+                    'message': "Sorry, I had trouble processing that. Can you rephrase?",
+                    'task': None,
+                    'update_player_description': None
                 }
-            
-            # Validate required fields exist
-            if 'message' not in result:
-                result['message'] = "I'm not sure how to respond to that."
-            if 'task' not in result:
-                result['task'] = None
-            if 'update_player_description' not in result:
-                result['update_player_description'] = None
             
             logger.info(f"Parsed chat result: message='{result['message'][:50]}...', task={repr(result['task'])}, player_update={bool(result['update_player_description'])}")
             
             return result
             
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from LLM response: {e}")
-            logger.error(f"Response was: {response_text[:500]}")
-            return {
-                'message': "Sorry, I had trouble processing that. Can you rephrase?",
-                'task': None
-            }
         except Exception as e:
             logger.error(f"Error processing chat message: {e}", exc_info=True)
             return {
                 'message': "Oops, something went wrong in my brain. What were we talking about?",
-                'task': None
+                'task': None,
+                'update_player_description': None
             }
     
     async def _send_chat_response(self, message: str, player: str = None):

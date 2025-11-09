@@ -56,7 +56,6 @@ class LowLevelBrain:
         self.modes_config = low_config.get('modes', {})
         
         self.event_queue = asyncio.Queue(maxsize=100)
-        self.reflex_active = False
         
         # Unstuck tracking (ported from modes.js unstuck mode)
         self.prev_location = None
@@ -83,6 +82,8 @@ class LowLevelBrain:
         self.last_entity = None
         self.next_stare_change = 0
         
+        self.exec_coordinator = None
+        
         # Register event handlers
         self.event_handlers = {
             'combat_engaged': self._handle_combat,
@@ -96,6 +97,25 @@ class LowLevelBrain:
         }
         
         logger.info("Low-level brain initialized with reflex system")
+    
+    async def _execute_with_coordinator(self, layer: str, label: str, action_fn, auto_resume: bool = True):
+        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
+            result = await self.exec_coordinator.execute_action(
+                layer=layer,
+                label=label,
+                action_fn=action_fn,
+                can_interrupt=None,
+                auto_resume=auto_resume
+            )
+            
+            if result.get('blocked'):
+                logger.debug(f"{label} blocked by higher priority action")
+            elif result.get('cancelled'):
+                logger.warning(f"{label} was cancelled by higher priority action")
+            
+            return result
+        else:
+            raise RuntimeError("ExecutionCoordinator not set in LowLevelBrain")
     
     async def handle_events(self):
         """
@@ -186,16 +206,22 @@ class LowLevelBrain:
         Args:
             event: Combat event data with enemy_type, enemy_id
         """
-        if self.reflex_active:
-            return
-        
-        self.reflex_active = True
         enemy_type = event.get('enemy_type', 'enemy')
         logger.info(f"Combat reflex triggered: Fighting {enemy_type}!")
         
+        await self._execute_with_coordinator(
+            layer='low_reflex',
+            label='reflex:combat',
+            action_fn=lambda: self._execute_combat(enemy_type),
+            auto_resume=True
+        )
+    
+    async def _execute_combat(self, enemy_type: str):
+        """Execute combat action"""
         try:
             # Notify other layers that reflex is active
             await self.shared_state.update('reflex_triggered', 'combat')
+            await self.shared_state.update('in_combat', True)
             
             # Send defend command to JavaScript
             await self.ipc_server.send_command({
@@ -207,14 +233,16 @@ class LowLevelBrain:
             })
             
             # Update shared state
-            await self.shared_state.update('in_combat', True)
             await self.shared_state.update('last_reflex', 'combat')
             
+        except asyncio.CancelledError:
+            logger.warning("Combat was cancelled by higher priority reflex")
+            raise
         except Exception as e:
             logger.error(f"Combat reflex error: {e}")
         finally:
-            self.reflex_active = False
             await self.shared_state.update('reflex_triggered', None)
+            await self.shared_state.update('in_combat', False)
     
     async def _handle_low_health(self, event: Dict[str, Any]):
         """
@@ -223,24 +251,46 @@ class LowLevelBrain:
         Triggers when health < 5 or last damage >= current health.
         Escapes by moving 20 blocks away.
         
+        CRITICAL: Uses ExecutionCoordinator with 'low_reflex' priority to interrupt mid-level tasks
+        
         Args:
             event: Health event data with health value
         """
-        if self.reflex_active:
-            return
-        
         health = event.get('health', 20)
         
-        self.reflex_active = True
-        logger.warning(f"Low health reflex triggered: I'm dying! Health={health}")
+        # Debounce: Don't spam escape if already escaping recently
+        current_time = asyncio.get_event_loop().time()
+        last_escape_time = getattr(self, '_last_low_health_escape_time', 0)
         
+        if (current_time - last_escape_time) < 5.0:
+            logger.debug(f"Low health reflex debounced (health={health}, last escape {current_time - last_escape_time:.1f}s ago)")
+            return
+        
+        logger.warning(f"⚠️ Low health reflex triggered: I'm dying! Health={health}")
+        
+        await self._execute_with_coordinator(
+            layer='low_reflex',
+            label='reflex:low_health',
+            action_fn=lambda: self._execute_low_health_escape(health)
+        )
+        
+        self._last_low_health_escape_time = current_time
+    
+    async def _execute_low_health_escape(self, health: float):
+        """Execute low health escape action"""
         try:
-            # Send escape command (moveAway 20 blocks)
+            # Cancel pathfinding first, then escape
             await self.ipc_server.send_command({
-                'type': 'execute_skill',
+                'type': 'execute_code',
                 'data': {
-                    'skill': 'moveAway',
-                    'params': [20]
+                    'code': """
+                        // Cancel any active pathfinding (interrupts current action)
+                        bot.pathfinder.setGoal(null);
+                        // Escape 20 blocks away
+                        await skills.moveAway(bot, 20);
+                        log(bot, "Escaped from danger!");
+                    """,
+                    'no_response': True
                 }
             })
             
@@ -248,10 +298,11 @@ class LowLevelBrain:
             await self.shared_state.update('health', health)
             await self.shared_state.update('last_reflex', 'low_health')
             
+        except asyncio.CancelledError:
+            logger.warning("Low health escape was cancelled by higher priority reflex")
+            raise
         except Exception as e:
             logger.error(f"Low health reflex error: {e}")
-        finally:
-            self.reflex_active = False
     
     async def _handle_on_fire(self, event: Dict[str, Any]):
         """
@@ -261,35 +312,50 @@ class LowLevelBrain:
         1. Use water bucket if available
         2. Find nearest water source
         3. Move away from fire/lava
-        """
-        if self.reflex_active:
-            return
         
-        self.reflex_active = True
+        CRITICAL: Uses ExecutionCoordinator with 'low_reflex' priority to interrupt mid-level tasks
+        """
         logger.warning("On fire reflex triggered: I'm on fire!")
         
+        position = event.get('position', {})
+        has_water_bucket = event.get('has_water_bucket', False)
+        
+        await self._execute_with_coordinator(
+            layer='low_reflex',
+            label='reflex:on_fire',
+            action_fn=lambda: self._execute_on_fire_escape(position, has_water_bucket)
+        )
+    
+    async def _execute_on_fire_escape(self, position: Dict[str, Any], has_water_bucket: bool):
+        """Execute on fire escape action"""
         try:
-            position = event.get('position', {})
-            has_water_bucket = event.get('has_water_bucket', False)
-            
             if has_water_bucket:
-                # Place water at current position
-                await self.ipc_server.send_command({
-                    'type': 'execute_skill',
-                    'data': {
-                        'skill': 'placeBlock',
-                        'params': ['water_bucket', position.get('x'), 
-                                  position.get('y'), position.get('z')]
-                    }
-                })
-                logger.info("Placed water bucket to extinguish fire")
-            else:
-                # Try to find water
+                # Cancel pathfinding first, then place water
                 await self.ipc_server.send_command({
                     'type': 'execute_code',
                     'data': {
                         'code': """
-                            // Find nearest water and go to it
+                            // Cancel any active pathfinding
+                            bot.pathfinder.setGoal(null);
+                            // Place water at current position
+                            await skills.placeBlock(bot, 'water_bucket', """ + str(position.get('x', 0)) + """, 
+                                                  """ + str(position.get('y', 0)) + """, 
+                                                  """ + str(position.get('z', 0)) + """);
+                            log(bot, "Placed water bucket to extinguish fire");
+                        """,
+                        'no_response': True
+                    }
+                })
+            else:
+                # Cancel pathfinding first, then escape
+                await self.ipc_server.send_command({
+                    'type': 'execute_code',
+                    'data': {
+                        'code': """
+                            // Cancel any active pathfinding (interrupts current action)
+                            bot.pathfinder.setGoal(null);
+                            
+                            // Try to find water
                             let nearestWater = world.getNearestBlock(bot, 'water', 20);
                             if (nearestWater) {
                                 const pos = nearestWater.position;
@@ -305,31 +371,47 @@ class LowLevelBrain:
             
             await self.shared_state.update('last_reflex', 'on_fire')
             
+        except asyncio.CancelledError:
+            logger.warning("On fire escape was cancelled by higher priority reflex")
+            raise
         except Exception as e:
             logger.error(f"On fire reflex error: {e}")
-        finally:
-            self.reflex_active = False
     
     async def _handle_drowning(self, event: Dict[str, Any]):
         """
         Handle drowning reflex (ported from modes.js self_preservation)
         
         Simply jumps to swim to surface.
+        Only active when bot is NOT pathfinding (to avoid conflicts).
         This is called when blockAbove is water.
         """
-        logger.warning("Drowning reflex triggered: Swimming to surface")
+        # Don't spam - check if already handled recently
+        last_reflex = await self.shared_state.get('last_reflex')
+        current_time = asyncio.get_event_loop().time()
+        last_reflex_time = getattr(self, '_last_drowning_reflex_time', 0)
+        
+        if last_reflex == 'drowning' and (current_time - last_reflex_time) < 1.0:
+            return  # Already swimming, don't spam
+        
+        logger.debug("Drowning reflex: Swimming up (only if not pathfinding)")
         
         try:
-            # Send jump command (doesn't interrupt current goal)
+            # CRITICAL: Only jump if not pathfinding (like original MindCraft)
+            # This prevents conflict with pathfinder's goal
             await self.ipc_server.send_command({
                 'type': 'execute_code',
                 'data': {
-                    'code': 'bot.setControlState("jump", true);',
+                    'code': """
+                        if (!bot.pathfinder.goal) {
+                            bot.setControlState('jump', true);
+                        }
+                    """,
                     'no_response': True
                 }
             })
             
             await self.shared_state.update('last_reflex', 'drowning')
+            self._last_drowning_reflex_time = current_time
             
         except Exception as e:
             logger.error(f"Drowning reflex error: {e}")
@@ -340,20 +422,32 @@ class LowLevelBrain:
         
         Triggered when agent is in same position for too long while active.
         Attempts to escape by moving away 5 blocks.
+        
+        CRITICAL: Uses ExecutionCoordinator with 'unstuck' priority (can interrupt mid-level)
         """
-        if self.reflex_active:
-            return
+        logger.warning("⚠️ Stuck reflex triggered: I'm stuck!")
         
-        self.reflex_active = True
-        logger.warning("Stuck reflex triggered: I'm stuck!")
-        
+        await self._execute_with_coordinator(
+            layer='unstuck',
+            label='reflex:unstuck',
+            action_fn=lambda: self._execute_unstuck_escape()
+        )
+    
+    async def _execute_unstuck_escape(self):
+        """Execute unstuck escape action"""
         try:
-            # Move away 5 blocks to get unstuck
+            # Cancel pathfinding first, then escape
             await self.ipc_server.send_command({
-                'type': 'execute_skill',
+                'type': 'execute_code',
                 'data': {
-                    'skill': 'moveAway',
-                    'params': [5]
+                    'code': """
+                        // Cancel any active pathfinding (interrupts current action)
+                        bot.pathfinder.setGoal(null);
+                        // Move away 5 blocks to get unstuck
+                        await skills.moveAway(bot, 5);
+                        log(bot, "Escaped from stuck position");
+                    """,
+                    'no_response': True
                 }
             })
             
@@ -364,10 +458,11 @@ class LowLevelBrain:
             await self.shared_state.update('last_reflex', 'unstuck')
             logger.info("Unstuck attempt completed")
             
+        except asyncio.CancelledError:
+            logger.warning("Unstuck escape was cancelled by higher priority reflex")
+            raise
         except Exception as e:
             logger.error(f"Unstuck reflex error: {e}")
-        finally:
-            self.reflex_active = False
     
     async def _handle_state_update(self, event: Dict[str, Any]):
         """
@@ -490,25 +585,15 @@ class LowLevelBrain:
         if self.stuck_time > self.max_stuck_time:
             logger.warning(f"Stuck detected: {self.stuck_time:.1f}s in same location")
             
-            # Use ExecutionCoordinator
-            if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-                result = await self.exec_coordinator.execute_action(
-                    layer='unstuck',
-                    label='mode:unstuck',
-                    action_fn=lambda: self._get_unstuck(),
-                    can_interrupt=['low_reflex', 'low_mode'],  # Can be interrupted by reflexes and modes
-                    auto_resume=True
-                )
-                
-                if result.get('cancelled'):
-                    logger.info("Unstuck was cancelled by higher priority action")
-                    return
-                
-                if not result.get('blocked'):
-                    self.stuck_time = 0  # Reset stuck time
-            else:
-                # Backward compatibility
-                await self._handle_stuck({})
+            result = await self._execute_with_coordinator(
+                layer='unstuck',
+                label='mode:unstuck',
+                action_fn=lambda: self._get_unstuck(),
+                auto_resume=True
+            )
+            
+            if not result.get('blocked') and not result.get('cancelled'):
+                self.stuck_time = 0  # Reset stuck time
     
     async def _get_unstuck(self):
         """Execute unstuck action"""
@@ -557,29 +642,12 @@ class LowLevelBrain:
         time_since_damage = time.time() - self.last_damage_time
         
         if time_since_damage < 3.0 and (health < 5 or self.last_damage_amount >= health):
-
-            if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-                result = await self.exec_coordinator.execute_action(
-                    layer='low_reflex',
-                    label='reflex:low_health',
-                    action_fn=lambda: self._escape_low_health(health),
-                    can_interrupt=None,
-                    auto_resume=True
-                )
-                
-                # Reflex actions shouldn't be cancelled (highest priority)
-                # But check anyway for robustness
-                if result.get('cancelled'):
-                    logger.warning("⚠️ Reflex was cancelled (should not happen!)")
-                    return
-                
-                # Low health reflex executed
-            else:
-                
-                await self.receive_event({
-                    'type': 'low_health',
-                    'health': health
-                })
+            await self._execute_with_coordinator(
+                layer='low_reflex',
+                label='reflex:low_health',
+                action_fn=lambda: self._escape_low_health(health),
+                auto_resume=True
+            )
             return
         
         # Other checks would be triggered by state_update events from JS
@@ -649,15 +717,28 @@ class LowLevelBrain:
         
         Checks for hostile entities within 16 blocks and runs away.
         Higher priority than hunting/self-defense (runs first).
-        """
-        if self.reflex_active:
-            return
         
+        CRITICAL: Uses pathfinding, so must use ExecutionCoordinator
+        """
         # Check if mode is enabled in config
         cowardice_enabled = self.modes_config.get('cowardice', False)
         if not cowardice_enabled:
             return
         
+        # Check if bot is ready
+        bot_ready = await self.shared_state.get('bot_ready') or False
+        if not bot_ready:
+            return
+        
+        await self._execute_with_coordinator(
+            layer='low_auto',
+            label='cowardice',
+            action_fn=lambda: self._execute_cowardice(),
+            auto_resume=False
+        )
+    
+    async def _execute_cowardice(self):
+        """Execute cowardice mode code"""
         try:
             await self.ipc_server.send_command({
                 'type': 'execute_code',
@@ -677,6 +758,13 @@ class LowLevelBrain:
                     'no_response': True
                 }
             })
+            
+            # Wait for execution (we sent no_response=True so don't expect response)
+            await self._wait_for_execution_result(expect_response=False)
+            
+        except asyncio.CancelledError:
+            logger.debug("Cowardice execution cancelled")
+            raise
         except Exception as e:
             logger.error(f"Cowardice check error: {e}")
     
@@ -685,10 +773,9 @@ class LowLevelBrain:
         Hunting mode: Hunt nearby animals (ported from modes.js)
         
         Hunts animals within 8 blocks when idle.
-        """
-        if self.reflex_active:
-            return
         
+        CRITICAL: Uses pathfinding (attackEntity), so must use ExecutionCoordinator
+        """
         # Check if bot is ready
         bot_ready = await self.shared_state.get('bot_ready') or False
         if not bot_ready:
@@ -698,23 +785,12 @@ class LowLevelBrain:
         if not hunting_enabled:
             return
         
-        # Use ExecutionCoordinator to manage execution
-        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-            result = await self.exec_coordinator.execute_action(
-                layer='low_auto',  # Autonomous mode - low priority, won't interrupt mid
-                label='hunting',
-                action_fn=lambda: self._execute_hunting(),
-                can_interrupt=[],  # Same priority modes don't interrupt each other
-                auto_resume=False
-            )
-            
-            if result.get('blocked'):
-                # Higher priority task is executing, skip silently
-                return
-            
-            if result.get('cancelled'):
-                logger.debug("Hunting was cancelled by higher priority action")
-                return
+        await self._execute_with_coordinator(
+            layer='low_auto',
+            label='hunting',
+            action_fn=lambda: self._execute_hunting(),
+            auto_resume=False
+        )
     
     async def _execute_hunting(self):
         """Execute hunting mode code"""
@@ -751,10 +827,9 @@ class LowLevelBrain:
         Item collecting mode: Collect nearby items when idle (ported from modes.js)
         
         Waits 2 seconds after noticing an item before picking it up.
-        """
-        if self.reflex_active:
-            return
         
+        CRITICAL: Uses pathfinding (pickupNearbyItems), so must use ExecutionCoordinator
+        """
         # Check if bot is ready
         bot_ready = await self.shared_state.get('bot_ready') or False
         if not bot_ready:
@@ -770,24 +845,17 @@ class LowLevelBrain:
             if self.item_noticed_at > 0:
                 if time.time() - self.item_noticed_at > self.item_wait_time:
                     # Time to pick it up - use ExecutionCoordinator
-                    if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-                        result = await self.exec_coordinator.execute_action(
-                            layer='low_quick',  # Quick action - low priority, won't interrupt mid
-                            label='item_collecting',
-                            action_fn=lambda: self._execute_item_collecting(),
-                            can_interrupt=[],
-                            auto_resume=False
-                        )
-                        
-                        if result.get('blocked'):
-                            # Higher priority task executing, reset timer
-                            self.item_noticed_at = -1
-                            return
-                        
-                        if result.get('cancelled'):
-                            logger.debug("Item collecting cancelled")
-                            self.item_noticed_at = -1
-                            return
+                    result = await self._execute_with_coordinator(
+                        layer='low_quick',
+                        label='item_collecting',
+                        action_fn=lambda: self._execute_item_collecting(),
+                        auto_resume=False
+                    )
+                    
+                    if result.get('blocked') or result.get('cancelled'):
+                        # Higher priority task executing, reset timer
+                        self.item_noticed_at = -1
+                        return
                     
                     self.item_noticed_at = -1
             else:
@@ -828,10 +896,9 @@ class LowLevelBrain:
         
         Places torches when idle and no torches nearby.
         Has cooldown to avoid spamming.
-        """
-        if self.reflex_active:
-            return
         
+        NOTE: placeBlock is simple action, but still uses ExecutionCoordinator for consistency
+        """
         # Check if bot is ready
         bot_ready = await self.shared_state.get('bot_ready') or False
         if not bot_ready:
@@ -844,25 +911,15 @@ class LowLevelBrain:
         if time.time() - self.last_torch_place < self.torch_cooldown:
             return
         
-        # Use ExecutionCoordinator to manage execution
-        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-            result = await self.exec_coordinator.execute_action(
-                layer='low_auto',  # Autonomous mode - low priority, won't interrupt mid
-                label='torch_placing',
-                action_fn=lambda: self._execute_torch_placing(),
-                can_interrupt=[],
-                auto_resume=False
-            )
-            
-            if result.get('blocked'):
-                # Higher priority task executing, skip
-                return
-            
-            if result.get('cancelled'):
-                logger.debug("Torch placing cancelled")
-                return
-            
-            # Update cooldown after execution
+        result = await self._execute_with_coordinator(
+            layer='low_auto',
+            label='torch_placing',
+            action_fn=lambda: self._execute_torch_placing(),
+            auto_resume=False
+        )
+        
+        if not result.get('blocked') and not result.get('cancelled'):
+            # Update cooldown after successful execution
             self.last_torch_place = time.time()
     
     async def _execute_torch_placing(self):
@@ -896,10 +953,9 @@ class LowLevelBrain:
         
         Maintains minimum distance from other players when idle.
         Only executes when a player is actually too close.
-        """
-        if self.reflex_active:
-            return
         
+        CRITICAL: Uses pathfinding (moveAwayFromEntity), so must use ExecutionCoordinator
+        """
         # Check if bot is ready
         bot_ready = await self.shared_state.get('bot_ready') or False
         if not bot_ready:
@@ -909,23 +965,12 @@ class LowLevelBrain:
         if not elbow_room_enabled:
             return
         
-        # Use ExecutionCoordinator to manage execution
-        if hasattr(self, 'exec_coordinator') and self.exec_coordinator:
-            result = await self.exec_coordinator.execute_action(
-                layer='low_quick',  # Quick action - low priority, won't interrupt mid
-                label='elbow_room',
-                action_fn=lambda: self._execute_elbow_room(),
-                can_interrupt=[],
-                auto_resume=False
-            )
-            
-            if result.get('blocked'):
-                # Higher priority task executing, skip silently
-                return
-            
-            if result.get('cancelled'):
-                logger.debug("Elbow room cancelled")
-                return
+        await self._execute_with_coordinator(
+            layer='low_quick',
+            label='elbow_room',
+            action_fn=lambda: self._execute_elbow_room(),
+            auto_resume=False
+        )
     
     async def _execute_elbow_room(self):
         """Execute elbow room mode code"""

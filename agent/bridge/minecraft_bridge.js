@@ -659,6 +659,18 @@ class BrainBridge {
             mainHand: this.bot.heldItem ? this.bot.heldItem.name : null
         };
 
+        let biomeName = 'unknown';
+        try {
+            const biomeId = this.bot.world.getBiome(this.bot.entity.position);
+            const biomeData = mcdata.getAllBiomes();
+            if (biomeData && biomeData[biomeId]) {
+                biomeName = biomeData[biomeId].name;
+            }
+        } catch (error) {
+            // If biome lookup fails, fallback to dimension
+            biomeName = this.bot.game.dimension;
+        }
+
         const state = {
             type: 'state_update',
             data: {
@@ -666,7 +678,7 @@ class BrainBridge {
                 health: this.bot.health,
                 food: this.bot.food,
                 inventory: this.getInventory(),
-                biome: this.bot.game.dimension,
+                biome: biomeName,
                 dimension: this.bot.game.dimension,
                 gamemode: this.bot.game.gameMode,
                 time_of_day: currentTimeOfDay,
@@ -701,33 +713,58 @@ class BrainBridge {
     }
 
     getNearbyEntities() {
-        return Object.values(this.bot.entities)
-            .filter(e => e.position.distanceTo(this.bot.entity.position) < 16)
-            .map(e => ({
-                type: e.type,
-                name: e.type === 'player' ? e.username : e.name,
-                position: e.position,
-                health: e.metadata[7]
-            }));
+        // Like original MindCraft: get entities sorted by distance
+        const entities = [];
+        for (const entity of Object.values(this.bot.entities)) {
+            const distance = entity.position.distanceTo(this.bot.entity.position);
+            if (distance > 16) continue;
+            entities.push({ entity, distance });
+        }
+
+        // Sort by distance (like original)
+        entities.sort((a, b) => a.distance - b.distance);
+
+        return entities.map(({ entity: e }) => ({
+            type: e.type,
+            name: e.type === 'player' ? e.username : e.name,
+            position: e.position,
+            health: e.metadata && e.metadata[7] !== undefined ? e.metadata[7] : null
+        }));
     }
 
     getNearbyBlocks() {
-        // Simplified - get blocks in 3x3x3 area
-        const blocks = [];
-        const pos = this.bot.entity.position;
+        // Get blocks in 3x3x3 area, using the same approach as original MindCraft
+        // Use bot.findBlocks to properly search for blocks
+        const positions = this.bot.findBlocks({
+            matching: (block) => {
+                return block && block.name !== 'air' && block.name !== 'cave_air';
+            },
+            maxDistance: 3,
+            count: 1000
+        });
 
-        for (let x = -1; x <= 1; x++) {
-            for (let y = -1; y <= 1; y++) {
-                for (let z = -1; z <= 1; z++) {
-                    const block = this.bot.blockAt(pos.offset(x, y, z));
-                    if (block && block.name !== 'air') {
-                        blocks.push({
-                            name: block.name,
-                            position: block.position,
-                            metadata: block.metadata || 0
-                        });
-                    }
-                }
+        const blocks = [];
+        // Track unique block types WITH metadata for water/lava
+        // Format: "water:0" (source) vs "water:1" (flowing)
+        const uniqueBlocks = new Set();
+
+        for (const position of positions) {
+            const block = this.bot.blockAt(position);
+            if (!block) continue;
+
+            // For water/lava, include metadata to distinguish source vs flowing
+            // For other blocks, just use name
+            const blockKey = (block.name === 'water' || block.name === 'lava')
+                ? `${block.name}:${block.metadata || 0}`
+                : block.name;
+
+            if (!uniqueBlocks.has(blockKey)) {
+                uniqueBlocks.add(blockKey);
+                blocks.push({
+                    name: block.name,
+                    position: block.position,
+                    metadata: block.metadata || 0
+                });
             }
         }
 
@@ -742,20 +779,25 @@ class BrainBridge {
         const head = this.bot.blockAt(pos.offset(0, 1, 0));
 
         // Find first solid block above head
+        // Ignore air and cave_air by default
         let firstAbove = null;
-        for (let i = 2; i < 10; i++) {
-            const block = this.bot.blockAt(pos.offset(0, i, 0));
-            if (block && block.name !== 'air') {
-                firstAbove = block;
-                break;
+        let height = 0;
+        for (let i = 0; i < 32; i++) {
+            const block = this.bot.blockAt(pos.offset(0, i + 2, 0));
+            if (!block || block.name === 'air' || block.name === 'cave_air') {
+                continue;
             }
+            // Found a solid block
+            firstAbove = block;
+            height = i;
+            break;
         }
 
         return {
             below: below ? below.name : 'void',
             legs: legs ? legs.name : 'air',
             head: head ? head.name : 'air',
-            firstAbove: firstAbove ? firstAbove.name : 'none'
+            firstAbove: firstAbove ? `${firstAbove.name} (${height} blocks up)` : 'none'
         };
     }
 

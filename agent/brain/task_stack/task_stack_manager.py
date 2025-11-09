@@ -141,7 +141,16 @@ class TaskStackManager:
         """Loads the task stack from a persisted state."""
         self.task_stack = task_stack
         logger.info("Task stack loaded from persistence. %d tasks.", len(self.task_stack))
-        # No need to save here, just update shared state
-        # Use asyncio.create_task if used in a non-async context at startup
-        import asyncio
-        asyncio.create_task(self._update_shared_state_with_active_task())
+        # IMPORTANT: Immediately update shared state synchronously
+        # Create a new event loop task but DO NOT wait for it in __init__
+        # Instead, high_level_brain should call sync_to_shared_state() after loading
+        logger.debug("Task stack loaded - shared state will be updated on next sync")
+    
+    async def sync_to_shared_state(self):
+        """Synchronously update shared state with current task stack."""
+        await self._update_shared_state_with_active_task()
+        active_task = self.get_active_task()
+        if active_task:
+            logger.info(f"✅ Task stack synced to shared_state: {active_task.get('goal', 'Unknown')} (Step {active_task.get('current_step_index', 0) + 1}/{len(active_task.get('steps', []))})")
+        else:
+            logger.info("✅ Task stack synced to shared_state: No active task")

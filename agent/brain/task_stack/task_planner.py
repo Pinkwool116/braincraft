@@ -7,6 +7,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from prompts.prompt_manager import PromptManager
+from utils.json_parser import parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -164,15 +165,17 @@ class TaskPlanner:
         return "\n".join(lines)
 
     def _parse_llm_json(self, json_string: str) -> Optional[Dict[str, Any]]:
-        """Safely parses a JSON string from an LLM response."""
-        try:
-            # Clean up the string first
-            if "```json" in json_string:
-                json_string = json_string.split("```json")[1].split("```")[0]
+        """
+        Safely parse JSON from LLM response using robust parser.
+        
+        Args:
+            json_string: LLM response text
             
-            return json.loads(json_string)
-        except (json.JSONDecodeError, IndexError) as e:
-            logger.error("Failed to parse LLM JSON response: %s\nResponse: %s", e, json_string)
+        Returns:
+            Parsed JSON dict or None if parsing fails
+        """
+        try:
+            return parse_json_response(json_string, strict=True)
+        except (ValueError, Exception) as e:
+            logger.error("Failed to parse LLM JSON response: %s\nResponse: %s", e, json_string[:500])
             return None
-
-import json

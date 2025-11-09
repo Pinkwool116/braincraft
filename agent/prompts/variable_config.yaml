@@ -86,6 +86,11 @@ CHAT_CONTEXT: get_chat_context
 #   $FAILED_STEP_DESCRIPTION -> context['failed_step_description']
 #   $REASON -> context['reason']
 #   $SUGGESTION -> context['suggestion']
+#   $MID_LEVEL_ANALYSIS -> context['mid_level_analysis']
+#   $MID_LEVEL_DECISION -> context['mid_level_decision']
+#   $ATTEMPT -> context['attempt']
+#   $FAILURE_HISTORY -> context['failure_history']
+#   $EXECUTION_CONTEXT -> context['execution_context']
 # 
 # Task Stack Context:
 #   $STACK_SUMMARY -> context['stack_summary']

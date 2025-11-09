@@ -69,7 +69,7 @@ class HighLevelBrain:
         
         # Initialize PromptManager 
         self.prompt_manager = PromptManager()
-        
+
         self._load_persisted_state()
         
         logger.info("High-level brain initialized with refactored task stack management.")
@@ -98,6 +98,8 @@ class HighLevelBrain:
 
             # Step 2: Ensure there is an active task available
             await self._ensure_active_task()
+
+            await self.task_stack_manager.sync_to_shared_state()
 
             active_task = self.task_stack_manager.get_active_task()
             if active_task:
@@ -221,6 +223,8 @@ class HighLevelBrain:
                 
                 task_stack = data.get('task_stack', [])
                 self.task_stack_manager.load_from_persistence(task_stack)
+                
+                asyncio.create_task(self.task_stack_manager.sync_to_shared_state())
                 
                 # Restore strategic_goal to SharedState
                 if 'strategic_goal' in data:
