@@ -214,12 +214,12 @@ class HighLevelBrain:
             data = self.mind_state_manager.load_mind_state()
             
             if data:
-                if 'goal_hierarchy' in data: 
-                    self.goal_hierarchy.from_dict(data['goal_hierarchy'])
-                if 'self_awareness' in data: 
-                    self.self_awareness.from_dict(data['self_awareness'])
-                if 'mental_state' in data: 
-                    self.mental_state.from_dict(data['mental_state'])
+                # if 'goal_hierarchy' in data: 
+                #     self.goal_hierarchy.from_dict(data['goal_hierarchy'])
+                # if 'self_awareness' in data: 
+                #     self.self_awareness.from_dict(data['self_awareness'])
+                # if 'mental_state' in data: 
+                #     self.mental_state.from_dict(data['mental_state'])
                 
                 task_stack = data.get('task_stack', [])
                 self.task_stack_manager.load_from_persistence(task_stack)
@@ -245,9 +245,9 @@ class HighLevelBrain:
             strategic_goal = await self.shared_state.get('strategic_goal')
             
             data = {
-                'goal_hierarchy': self.goal_hierarchy.to_dict(),
-                'self_awareness': self.self_awareness.to_dict(),
-                'mental_state': self.mental_state.to_dict(),
+                # 'goal_hierarchy': self.goal_hierarchy.to_dict(),
+                # 'self_awareness': self.self_awareness.to_dict(),
+                # 'mental_state': self.mental_state.to_dict(),
                 'task_stack': self.task_stack_manager.get_task_stack(),
                 'strategic_goal': strategic_goal,  # Save strategic_goal
             }
@@ -259,11 +259,11 @@ class HighLevelBrain:
     async def get_mind_context_for_prompt(self) -> str:
         """Get complete mind context for LLM prompts."""
         context = ""
-        context += await self.self_awareness.get_full_context()
-        context += self.goal_hierarchy.get_context_for_prompt()
-        mental_context = self.mental_state.get_context_for_prompt()
-        if mental_context:
-            context += mental_context
+        # context += await self.self_awareness.get_full_context()
+        # context += self.goal_hierarchy.get_context_for_prompt()
+        # mental_context = self.mental_state.get_context_for_prompt()
+        # if mental_context:
+        #     context += mental_context
         return context
     
     async def save_state(self):

@@ -7,7 +7,7 @@ and generating new knowledge without relying on game state.
 
 import logging
 import random
-from typing import Dict, Any, List, Optional
+from typing import Dict, Optional
 from .config import CONTEMPLATION_CONFIG
 
 logger = logging.getLogger(__name__)

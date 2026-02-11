@@ -131,22 +131,7 @@ while True:
 
 ### 4. **玩家关系系统** 👥
 
-智能体维护与每个玩家的关系数据：
-
-```python
-players_data = {
-    "Steve": {
-        "first_met": "2025-01-29T10:30:00",
-        "personality": ["friendly", "helpful"],
-        "preferences": ["likes building"],
-        "interactions": [
-            {"timestamp": "...", "content": "chat: hello"}
-        ],
-        "relationship": "friendly",  # neutral, friendly, hostile
-        "trust_level": 0.8  # 0.0 - 1.0
-    }
-}
-```
+智能体维护与每个玩家的关系数据
 
 **应用场景**:
 - 决定是否接受玩家的任务请求
