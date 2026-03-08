@@ -7,7 +7,7 @@ Each function receives a context dictionary and returns a formatted string.
 Context parameters:
 - state: Game state dictionary (required for most providers)
 - agent_name: Agent name string
-- memory_manager: MemoryManager instance (optional, for memory-related providers)
+- memory_manager: MemoryRouter instance (five-layer memory system)
 - task_stack_manager: TaskStackManager instance (optional, for task-related providers)
 - high_brain: HighLevelBrain instance (optional, for high-level specific providers)
 - self_awareness: SelfAwareness instance (optional, for agent info)
@@ -304,61 +304,18 @@ class DataProviders:
     
     @staticmethod
     def get_learned_experience(context: Dict[str, Any]) -> str:
-        """
-        Get learned experience summary (insights + lessons + player relationships).
-        Maps to $LEARNED_EXPERIENCE variable.
-        
-        This is the complete experience summary including both learned insights/lessons
-        and player relationship information.
-        
-        Args:
-            context: Must contain 'memory_manager' key
-            
-        Returns:
-            Formatted learned experience string or "No learned experience yet."
-        """
         memory_manager = context.get('memory_manager')
-        if not memory_manager:
-            raise ValueError("memory_manager is required in context for get_learned_experience")
-        
-        # Get insights and lessons (max 10 insights, 20 lessons)
-        learned_exp = memory_manager.get_learned_experience_summary(
-            max_insights=10,
-            max_lessons=20
-        )
-        return learned_exp if learned_exp else "No learned experience yet."
-    
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
+
     @staticmethod
     def get_lessons_learned(context: Dict[str, Any]) -> str:
-        """
-        Get lessons learned (failures and mistakes).
-        Maps to $LESSONS_LEARNED variable.
-        
-        This extracts only the "lessons learned" portion (from failures),
-        separate from general insights.
-        
-        Args:
-            context: Must contain 'memory_manager' key
-            
-        Returns:
-            Formatted lessons learned string or empty string
-        """
         memory_manager = context.get('memory_manager')
-        if not memory_manager:
-            raise ValueError("memory_manager is required in context for get_lessons_learned")
-        
-        lessons = memory_manager.learned_experience.get('lessons_learned', [])
-        if not lessons:
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
             return ""
-        
-        # Get last 10 lessons
-        recent_lessons = lessons[-10:]
-        lesson_lines = []
-        for lesson in recent_lessons:
-            lesson_lines.append(f"- {lesson['lesson']}")
-        
-        return "\n".join(lesson_lines)
-    
+        return memory_manager.retrieve_context(trigger_texts=[])
+
     @staticmethod
     def get_task_plan(context: Dict[str, Any]) -> str:
         """
@@ -382,83 +339,25 @@ class DataProviders:
     
     @staticmethod
     def get_players_info(context: Dict[str, Any]) -> str:
-        """
-        Get all players summary from memory.
-        Maps to $PLAYERS_INFO variable.
-        
-        Args:
-            context: Must contain 'memory_manager' key
-            
-        Returns:
-            Players summary or "No players encountered yet."
-        """
         memory_manager = context.get('memory_manager')
-        if not memory_manager:
-            raise ValueError("memory_manager is required in context for get_players_info")
-        if hasattr(memory_manager, 'get_all_players_summary'):
-            players_info = memory_manager.get_all_players_summary()
-            return players_info if players_info else "No players encountered yet."
-        return "No players encountered yet."
-    
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
+
     @staticmethod
     def get_player_info(context: Dict[str, Any]) -> str:
-        """
-        Get player description from bot's perspective.
-        Maps to $PLAYER_INFO variable.
-        
-        Args:
-            context: Must contain 'player' and 'memory_manager' keys
-            
-        Returns:
-            Player description or default message
-        """
-        player = context.get('player')
         memory_manager = context.get('memory_manager')
-        
-        if not player or not memory_manager:
-            # Fallback for edge cases
-            if not player:
-                return "Unknown player"
-            return f"No information about {player} yet."
-        
-        return memory_manager.get_player_info(player)
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
 
     @staticmethod
     def get_recent_memories(context: Dict[str, Any]) -> str:
-        """
-        Get recent memories list.
-        Maps to $MEMORY variable.
-        
-        Args:
-            context: Must contain 'memory_manager' key
-                    Optional: 'memory_count' (default: 20)
-            
-        Returns:
-            Formatted bullet list of recent memories or "No recent memories."
-        """
         memory_manager = context.get('memory_manager')
-        count = context.get('memory_count', 20)
-        
-        if not memory_manager:
-            raise ValueError("memory_manager is required in context for get_recent_memories")
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
 
-        if not hasattr(memory_manager, 'get_recent_memories'):
-            return "No recent memories."
-        
-        recent_memory_entries = memory_manager.get_recent_memories(count=count)
-        if not recent_memory_entries:
-            return "No recent memories."
-        
-        memory_lines = []
-        for entry in recent_memory_entries:
-            event_type = entry.get('type', 'event')
-            content = entry.get('content', '')
-            memory_lines.append(f"- [{event_type}] {content}")
-        
-        return "\n".join(memory_lines)
-    
-    # ========== Auxiliary Information ==========
-    
     @staticmethod
     def get_timestamp(context: Dict[str, Any]) -> str:
         """
@@ -636,6 +535,48 @@ This step: {current_step.get('description', 'Unknown')}"""
         
         return chat_context
 
+    # ========== New Memory System (Five-Layer) ==========
+
+    @staticmethod
+    def get_memory_context(context: Dict[str, Any]) -> str:
+        memory_manager = context.get('memory_manager')
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
+
+    @staticmethod
+    def get_self_narrative(context: Dict[str, Any]) -> str:
+        memory_manager = context.get('memory_manager')
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
+
+    @staticmethod
+    def get_knowledge(context: Dict[str, Any]) -> str:
+        memory_manager = context.get('memory_manager')
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
+
+    @staticmethod
+    def get_spatial_context(context: Dict[str, Any]) -> str:
+        memory_manager = context.get('memory_manager')
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+            return ""
+        return memory_manager.retrieve_context(trigger_texts=[])
+
+    @staticmethod
+    def get_recent_episodes(context: Dict[str, Any]) -> str:
+        """
+        Get recent episodic events.
+        Maps to $RECENT_EPISODES variable.
+        """
+        memory_manager = context.get('memory_manager')
+        if not memory_manager or not hasattr(memory_manager, 'episodic'):
+            return "No recent events."
+        count = context.get('memory_count', 15)
+        return memory_manager.episodic.format_for_prompt(count=count)
+
 
 # Export function mapping dictionary
 # This allows variable_config.yaml to reference functions by name
@@ -683,4 +624,11 @@ PROVIDER_FUNCTIONS = {
     'get_task_stack_summary': DataProviders.get_task_stack_summary,
     'get_active_task_summary': DataProviders.get_active_task_summary,
     'get_chat_context': DataProviders.get_chat_context,
+
+    # New five-layer memory system
+    'get_memory_context': DataProviders.get_memory_context,
+    'get_self_narrative': DataProviders.get_self_narrative,
+    'get_knowledge': DataProviders.get_knowledge,
+    'get_spatial_context': DataProviders.get_spatial_context,
+    'get_recent_episodes': DataProviders.get_recent_episodes,
 }

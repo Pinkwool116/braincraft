@@ -48,6 +48,13 @@ PLAYERS_INFO: get_players_info
 PLAYER_INFO: get_player_info
 MEMORY: get_recent_memories
 
+# ========== Five-Layer Memory System ==========
+MEMORY_CONTEXT: get_memory_context
+SELF_NARRATIVE: get_self_narrative
+KNOWLEDGE: get_knowledge
+SPATIAL_CONTEXT: get_spatial_context
+RECENT_EPISODES: get_recent_episodes
+
 # ========== Auxiliary Information ==========
 TIMESTAMP: get_timestamp
 AGENT_AGE: get_agent_age

@@ -11,7 +11,7 @@ Responsible for:
 import asyncio
 import logging
 from typing import Dict, Any, Optional
-from data_manager.memory_manager import MemoryManager
+from data_manager.memory_graph.memory_router import MemoryRouter
 from data_manager.mind_state_manager import MindStateManager
 from prompts.prompt_logger import PromptLogger
 from prompts.prompt_manager import PromptManager
@@ -43,7 +43,7 @@ class HighLevelBrain:
         self.llm = llm_model
         
         agent_name = config.get('agent_name', 'BrainyBot')
-        self.memory_manager = MemoryManager(agent_name)
+        self.memory_manager = MemoryRouter(agent_name)
         self.mind_state_manager = MindStateManager(agent_name)
         
         # Initialize Prompt Logger for debugging (controlled by config)
@@ -270,10 +270,6 @@ class HighLevelBrain:
         """Public method to save all brain state."""
         logger.info("Saving high-level brain state...")
         await self._save_persisted_state()
-        self.memory_manager._save_json(
-            self.memory_manager.players_file,
-            self.memory_manager.players
-        )
         logger.info("High-level brain state saved")
 
     # Methods to be called by mid-level brain

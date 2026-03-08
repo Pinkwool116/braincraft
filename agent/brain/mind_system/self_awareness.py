@@ -24,7 +24,7 @@ class SelfAwareness:
         
         Args:
             shared_state: SharedState instance
-            memory_manager: MemoryManager instance
+            memory_manager: MemoryRouter instance (five-layer memory system)
         """
         self.shared_state = shared_state
         self.memory = memory_manager

@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Optional
 import asyncio
 import logging
 from datetime import datetime
-from data_manager.memory_manager import MemoryManager
+from data_manager.memory_graph.memory_router import MemoryRouter
 from data_manager.chat_manager import ChatManager
 from prompts.prompt_logger import PromptLogger
 from prompts.prompt_manager import PromptManager
@@ -61,7 +61,7 @@ class MidLevelBrain:
         
         # Memory manager for persistence
         agent_name = config.get('agent_name', 'BrainyBot')
-        self.memory = MemoryManager(agent_name)
+        self.memory = MemoryRouter(agent_name)
         
         # Chat manager for chat history persistence
         self.chat_manager = ChatManager(agent_name)
@@ -232,25 +232,14 @@ class MidLevelBrain:
                 # Notify high-level to move to next step
                 await self.high_brain.mark_step_completed(current_step_index)
                 
-                # Add to short-term memory
-                self.memory.add_short_term_memory(
-                    'step_success',
-                    f"Completed: {current_step['description']}",
-                    {'step_index': current_step_index}
-                )
+                # Add to episodic memory
+                self.memory.experience(f"Completed step: {current_step.get('description', 'unknown')}")
                 
-                # Add to learned experience (if significant)
+                # Add to semantic knowledge (if significant)
                 task_plan = await self.shared_state.get('active_task')
                 if task_plan:
                     goal = task_plan.get('goal', '')
-                    self.memory.add_experience(
-                        summary=f"Successfully: {current_step['description']}",
-                        details={
-                            'step': current_step['description'],
-                            'step_index': current_step_index,
-                            'goal': goal
-                        }
-                    )
+                    self.memory.experience(f"Insight gained: {current_step.get('description', '')}")
             else:
                 # Step failed - LLM has already requested modification or safety limit reached
                 logger.warning(f"Step {current_step_index + 1} execution stopped (modification requested or limit reached)")
@@ -529,17 +518,10 @@ class MidLevelBrain:
                 current_idx = task_plan.get('current_step_index', 0)
                 current_step = task_plan['steps'][min(current_idx, len(task_plan['steps']) - 1)]
                 lesson = explanation or guidance or 'High-level plan adjustment.'
-                self.memory.add_lesson(
-                    lesson=lesson,
-                    context=current_step.get('description', 'Unknown step')
-                )
+                self.memory.experience(f"Learned a lesson: {lesson}")
 
         elif decision in ('discarded_task', 'rejected_player_task'):
-            self.memory.add_short_term_memory(
-                'task_update',
-                f"High-level discarded task: {explanation or guidance}",
-                {'decision': decision}
-            )
+            self.memory.experience(f"High-level discarded task: {explanation or guidance}")
 
         else:
             # Treat as guidance only
@@ -684,22 +666,14 @@ class MidLevelBrain:
                 output = result.get('message', 'Code executed successfully')
                 logger.info(f"Step completed: {output}")
                 
-                self.memory.add_short_term_memory(
-                    'step_success',
-                    f"Step: {step.get('description')}",
-                    {'output': output}
-                )
+                self.memory.experience(f"Executed Step Successfully: {step.get('description')}")
                 
                 return True
             
             error_msg = result.get('message', 'Unknown error during execution')
             logger.warning(f"Code execution failed: {error_msg}")
             
-            self.memory.add_short_term_memory(
-                'code_execution_failed',
-                f"Step: {step.get('description')} - Error: {error_msg}",
-                {'error': error_msg, 'code': code}
-            )
+            self.memory.experience(f"Code Execution Failed on Step: {step.get('description')}. Error: {error_msg}")
             
             step['last_error'] = error_msg
             return False
@@ -1055,7 +1029,7 @@ class MidLevelBrain:
                 # Update player description if provided
                 player_description = chat_result.get('update_player_description')
                 if player_description and isinstance(player_description, str) and player_description.strip():
-                    self.memory.update_player_description(player, player_description)
+                    self.memory.experience(f"Interacted with {player}. Impression: {player_description}", context_hints={"entities": [player]})
                     logger.info(f"Updated player description for {player}")
             
             task_desc = chat_result.get('task')

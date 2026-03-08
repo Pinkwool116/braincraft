@@ -22,10 +22,8 @@ class MindStateManager:
     """
     Manages the persistence of mind state to mind_state.json
     
-    This is separate from MemoryManager which handles:
-    - Short-term memory
-    - Learned experience
-    - Player information
+    This is separate from MemoryRouter which handles:
+    - Five-layer memory (semantic, spatial, episodic, social, self-narrative)
     """
     
     def __init__(self, agent_name: str = "BrainyBot"):

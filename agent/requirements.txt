@@ -14,3 +14,6 @@ pyyaml>=6.0.0
 
 # Optional: For local Ollama support
 # aiohttp>=3.9.0
+
+# Graph Memory Systems
+networkx>=3.0.0

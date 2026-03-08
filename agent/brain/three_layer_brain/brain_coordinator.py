@@ -528,7 +528,7 @@ class BrainCoordinator:
             
             # Save mid-level brain state (if needed)
             logger.info("Saving mid-level brain state...")
-            # Mid-level brain auto-saves to memory_manager
+            # Mid-level brain auto-saves to MemoryRouter layers
             # No need to save low-level brain (reflexes are stateless)
             
             logger.info("All brain states saved successfully")

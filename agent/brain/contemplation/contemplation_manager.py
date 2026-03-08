@@ -26,7 +26,7 @@ class ContemplationManager:
         Initialize contemplation manager
         
         Args:
-            memory_manager: MemoryManager instance
+            memory_manager: MemoryRouter instance (five-layer memory system)
             llm: LLM model for generating reflections
             mental_state: MentalState instance
             goal_hierarchy: GoalHierarchy instance
@@ -95,19 +95,19 @@ class ContemplationManager:
         
         # Check minimum experiences
         if 'min_experiences' in mode_config:
-            total = len(self.memory.learned_experience.get('insights', []))
+            total = len(self.memory.engine.find_nodes_by_type('concept'))
             if total < mode_config['min_experiences']:
                 return False
         
         # Check minimum insights
         if 'min_insights' in mode_config:
-            total = len(self.memory.learned_experience.get('insights', []))
+            total = len(self.memory.engine.find_nodes_by_type('concept'))
             if total < mode_config['min_insights']:
                 return False
         
         # Check relationships requirement
         if mode_config.get('requires_relationships', False):
-            if not self.memory.players:
+            if not self.memory.engine.find_nodes_by_type('entity'):
                 return False
         
         # Check life events requirement
