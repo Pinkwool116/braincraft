@@ -39,21 +39,14 @@ NEARBY_ENTITIES: get_nearby_entities
 
 # ========== High-Level Brain Specific ==========
 MIND_CONTEXT: get_mind_context
-LEARNED_EXPERIENCE: get_learned_experience
-LESSONS_LEARNED: get_lessons_learned
 TASK_PLAN: get_task_plan
 
 # ========== Memory Related ==========
+WORKING_MEMORY: get_working_memory
+LONG_TERM_MEMORY: get_long_term_memory
 PLAYERS_INFO: get_players_info
 PLAYER_INFO: get_player_info
 MEMORY: get_recent_memories
-
-# ========== Five-Layer Memory System ==========
-MEMORY_CONTEXT: get_memory_context
-SELF_NARRATIVE: get_self_narrative
-KNOWLEDGE: get_knowledge
-SPATIAL_CONTEXT: get_spatial_context
-RECENT_EPISODES: get_recent_episodes
 
 # ========== Auxiliary Information ==========
 TIMESTAMP: get_timestamp

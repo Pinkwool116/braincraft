@@ -88,6 +88,9 @@ class MidLevelBrain:
         
         self.prompt_manager = PromptManager()
         
+        # 工作记忆：当前跟踪的任务目标（用于检测任务切换）
+        self._tracked_task_goal = None
+        
         # Configuration
         self.max_retries = config.get('mid_level_brain', {}).get('max_task_retries', 3)
         
@@ -121,7 +124,33 @@ class MidLevelBrain:
         # Priority 3: Execute current task plan step
         if not self.is_executing:
             await self._process_task_plan()
-    
+
+    async def _check_task_transition(self, current_goal: str, task_plan: dict):
+        """
+        检测任务切换，管理工作记忆的生命周期。
+        在 _process_task_plan 的开头调用。
+        """
+        if current_goal == self._tracked_task_goal:
+            return  # 同一个任务，无需操作
+
+        # 旧任务结束
+        if self._tracked_task_goal is not None:
+            if self.memory.working_memory.is_active:
+                self.memory.end_task("success", f"任务完成: {self._tracked_task_goal}")
+                await self.memory.crystallize(self.llm)
+
+        # 新任务开始
+        if current_goal is not None:
+            environment = ""
+            game_state = await self.shared_state.get('game_state')
+            if game_state:
+                pos = game_state.get('position', {})
+                biome = game_state.get('biome', '')
+                environment = f"位置: ({pos.get('x', '?')}, {pos.get('y', '?')}, {pos.get('z', '?')}), 生物群系: {biome}"
+            self.memory.begin_task(current_goal, environment)
+
+        self._tracked_task_goal = current_goal
+
     async def _process_task_plan(self):
         """
         Process current task plan from high-level brain
@@ -130,6 +159,10 @@ class MidLevelBrain:
         """
         # Get active task plan from shared state (managed by high-level brain)
         task_plan = await self.shared_state.get('active_task')
+        
+        # 检测任务切换，管理工作记忆生命周期
+        current_goal = task_plan.get('goal') if task_plan and task_plan.get('status') == 'active' else None
+        await self._check_task_transition(current_goal, task_plan)
         
         if not task_plan or task_plan.get('status') != 'active':
             return
@@ -232,14 +265,8 @@ class MidLevelBrain:
                 # Notify high-level to move to next step
                 await self.high_brain.mark_step_completed(current_step_index)
                 
-                # Add to episodic memory
-                self.memory.experience(f"Completed step: {current_step.get('description', 'unknown')}")
-                
-                # Add to semantic knowledge (if significant)
-                task_plan = await self.shared_state.get('active_task')
-                if task_plan:
-                    goal = task_plan.get('goal', '')
-                    self.memory.experience(f"Insight gained: {current_step.get('description', '')}")
+                # 记录到工作记忆
+                self.memory.log("action", f"完成步骤: {current_step.get('description', 'unknown')}")
             else:
                 # Step failed - LLM has already requested modification or safety limit reached
                 logger.warning(f"Step {current_step_index + 1} execution stopped (modification requested or limit reached)")
@@ -518,10 +545,14 @@ class MidLevelBrain:
                 current_idx = task_plan.get('current_step_index', 0)
                 current_step = task_plan['steps'][min(current_idx, len(task_plan['steps']) - 1)]
                 lesson = explanation or guidance or 'High-level plan adjustment.'
-                self.memory.experience(f"Learned a lesson: {lesson}")
+                self.memory.log("observation", f"经验教训: {lesson}")
 
         elif decision in ('discarded_task', 'rejected_player_task'):
-            self.memory.experience(f"High-level discarded task: {explanation or guidance}")
+            self.memory.log("observation", f"任务被放弃: {explanation or guidance}")
+            # 任务被放弃，结束工作记忆并反思
+            self.memory.end_task("abandoned", explanation or guidance or '')
+            await self.memory.crystallize(self.llm)
+            self._tracked_task_goal = None
 
         else:
             # Treat as guidance only
@@ -666,14 +697,14 @@ class MidLevelBrain:
                 output = result.get('message', 'Code executed successfully')
                 logger.info(f"Step completed: {output}")
                 
-                self.memory.experience(f"Executed Step Successfully: {step.get('description')}")
+                self.memory.log("action", f"代码执行成功: {step.get('description')}")
                 
                 return True
             
             error_msg = result.get('message', 'Unknown error during execution')
             logger.warning(f"Code execution failed: {error_msg}")
             
-            self.memory.experience(f"Code Execution Failed on Step: {step.get('description')}. Error: {error_msg}")
+            self.memory.log("failure", f"代码执行失败: {step.get('description')}", detail=error_msg)
             
             step['last_error'] = error_msg
             return False
@@ -1029,7 +1060,7 @@ class MidLevelBrain:
                 # Update player description if provided
                 player_description = chat_result.get('update_player_description')
                 if player_description and isinstance(player_description, str) and player_description.strip():
-                    self.memory.experience(f"Interacted with {player}. Impression: {player_description}", context_hints={"entities": [player]})
+                    self.memory.log("interaction", f"与 {player} 交流，印象: {player_description}")
                     logger.info(f"Updated player description for {player}")
             
             task_desc = chat_result.get('task')

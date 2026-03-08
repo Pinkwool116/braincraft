@@ -38,11 +38,11 @@ $TASK_PLAN_CONTEXT
 - 应该付出额外的努力和创造性的解决方式来尝试完成玩家的任务。
 - 对于玩家任务，如果确实无法完成，请清晰解释无法完成的原因，而不是默默失败。
 
-## 你的经验
-$LEARNED_EXPERIENCE
+## 近期工作记忆
+$WORKING_MEMORY
 
-### 吸取的教训：
-$LESSONS_LEARNED
+## 相关长期记忆
+$LONG_TERM_MEMORY
 
 ## 你的任务
 生成 JavaScript 代码来完成“这一个”特定步骤。只专注于这个具体的步骤。

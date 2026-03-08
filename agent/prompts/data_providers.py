@@ -303,17 +303,29 @@ class DataProviders:
         return ""
     
     @staticmethod
-    def get_learned_experience(context: Dict[str, Any]) -> str:
+    def get_working_memory(context: Dict[str, Any]) -> str:
+        """
+        获取工作记忆缓冲区内容（当前任务的原始体验）。
+        Maps to $WORKING_MEMORY variable.
+        """
         memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
-            return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
+        if not memory_manager or not hasattr(memory_manager, 'working_memory'):
+            return "无工作记忆。"
+        buffer = memory_manager.working_memory
+        if not buffer.has_content:
+            return "无工作记忆。"
+        return buffer.get_buffer_text()
 
     @staticmethod
-    def get_lessons_learned(context: Dict[str, Any]) -> str:
+    def get_long_term_memory(context: Dict[str, Any]) -> str:
+        """
+        检索与当前情境相关的长期记忆图谱切片。
+        Maps to $LONG_TERM_MEMORY variable.
+        """
         memory_manager = context.get('memory_manager')
         if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
-            return ""
+            return "无相关长期记忆。"
+        # TODO: 传入更好的种子文本（如当前任务描述、环境关键词）而非空列表
         return memory_manager.retrieve_context(trigger_texts=[])
 
     @staticmethod
@@ -339,20 +351,26 @@ class DataProviders:
     
     @staticmethod
     def get_players_info(context: Dict[str, Any]) -> str:
+        """检索与玩家相关的社交记忆。Maps to $PLAYERS_INFO variable."""
         memory_manager = context.get('memory_manager')
         if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
             return ""
+        # TODO: 传入玩家名称作为种子文本，检索社交记忆
         return memory_manager.retrieve_context(trigger_texts=[])
 
     @staticmethod
     def get_player_info(context: Dict[str, Any]) -> str:
+        """检索与特定玩家相关的记忆。Maps to $PLAYER_INFO variable."""
         memory_manager = context.get('memory_manager')
         if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
             return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
+        player_name = context.get('player_name', '')
+        trigger = [player_name] if player_name else []
+        return memory_manager.retrieve_context(trigger_texts=trigger)
 
     @staticmethod
     def get_recent_memories(context: Dict[str, Any]) -> str:
+        """检索近期记忆。Maps to $MEMORY variable."""
         memory_manager = context.get('memory_manager')
         if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
             return ""
@@ -535,47 +553,15 @@ This step: {current_step.get('description', 'Unknown')}"""
         
         return chat_context
 
-    # ========== New Memory System (Five-Layer) ==========
+    # ========== New Memory System (Graph-based) ==========
 
     @staticmethod
     def get_memory_context(context: Dict[str, Any]) -> str:
+        """通用记忆上下文检索。"""
         memory_manager = context.get('memory_manager')
         if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
             return ""
         return memory_manager.retrieve_context(trigger_texts=[])
-
-    @staticmethod
-    def get_self_narrative(context: Dict[str, Any]) -> str:
-        memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
-            return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
-
-    @staticmethod
-    def get_knowledge(context: Dict[str, Any]) -> str:
-        memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
-            return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
-
-    @staticmethod
-    def get_spatial_context(context: Dict[str, Any]) -> str:
-        memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
-            return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
-
-    @staticmethod
-    def get_recent_episodes(context: Dict[str, Any]) -> str:
-        """
-        Get recent episodic events.
-        Maps to $RECENT_EPISODES variable.
-        """
-        memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'episodic'):
-            return "No recent events."
-        count = context.get('memory_count', 15)
-        return memory_manager.episodic.format_for_prompt(count=count)
 
 
 # Export function mapping dictionary
@@ -603,14 +589,15 @@ PROVIDER_FUNCTIONS = {
     
     # High-level brain specific
     'get_mind_context': DataProviders.get_mind_context,
-    'get_learned_experience': DataProviders.get_learned_experience,
-    'get_lessons_learned': DataProviders.get_lessons_learned,
     'get_task_plan': DataProviders.get_task_plan,
     
-    # Memory related
+    # Memory system
+    'get_working_memory': DataProviders.get_working_memory,
+    'get_long_term_memory': DataProviders.get_long_term_memory,
     'get_players_info': DataProviders.get_players_info,
     'get_player_info': DataProviders.get_player_info,
     'get_recent_memories': DataProviders.get_recent_memories,
+    'get_memory_context': DataProviders.get_memory_context,
     
     # Auxiliary information
     'get_timestamp': DataProviders.get_timestamp,
@@ -624,11 +611,4 @@ PROVIDER_FUNCTIONS = {
     'get_task_stack_summary': DataProviders.get_task_stack_summary,
     'get_active_task_summary': DataProviders.get_active_task_summary,
     'get_chat_context': DataProviders.get_chat_context,
-
-    # New five-layer memory system
-    'get_memory_context': DataProviders.get_memory_context,
-    'get_self_narrative': DataProviders.get_self_narrative,
-    'get_knowledge': DataProviders.get_knowledge,
-    'get_spatial_context': DataProviders.get_spatial_context,
-    'get_recent_episodes': DataProviders.get_recent_episodes,
 }

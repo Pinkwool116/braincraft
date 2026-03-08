@@ -29,13 +29,8 @@ $NEARBY_BLOCKS
 ### 附近实体（16格范围内）
 $NEARBY_ENTITIES
 
-## 你的经验
-
-### 积累的知识
-$LEARNED_EXPERIENCE
-
-### 吸取的教训
-$LESSONS_LEARNED
+## 你的记忆与经验
+$LONG_TERM_MEMORY
 
 ## 需分解的任务
 

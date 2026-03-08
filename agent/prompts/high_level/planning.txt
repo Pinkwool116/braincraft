@@ -17,8 +17,8 @@ $MIND_CONTEXT
 ### 你当前的任务计划
 $TASK_PLAN
 
-### 你积累的知识
-$LEARNED_EXPERIENCE
+### 你的记忆与经验
+$LONG_TERM_MEMORY
 
 这些知识来源于你的亲身经历——胜利、失败、顿悟以及沉思。
 
