@@ -12,10 +12,7 @@ Responsible for:
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional
-import asyncio
-import logging
 from datetime import datetime
-from data_manager.memory_graph.memory_router import MemoryRouter
 from data_manager.chat_manager import ChatManager
 from prompts.prompt_logger import PromptLogger
 from prompts.prompt_manager import PromptManager
@@ -59,9 +56,9 @@ class MidLevelBrain:
         self.llm = llm_model
         self.high_brain = high_level_brain
         
-        # Memory manager for persistence
+        # Share MemoryRouter with high-level brain (single graph instance)
         agent_name = config.get('agent_name', 'BrainyBot')
-        self.memory = MemoryRouter(agent_name)
+        self.memory = high_level_brain.memory_manager
         
         # Chat manager for chat history persistence
         self.chat_manager = ChatManager(agent_name)
@@ -114,8 +111,12 @@ class MidLevelBrain:
         if self.is_waiting_for_guidance:
             mod_response = await self.shared_state.get('modification_response')
             if mod_response:
-                await self._handle_guidance_response(mod_response)
+                # Get the original request to contextualize the log
+                mod_request = await self.shared_state.get('modification_request')
+                await self._handle_guidance_response(mod_request, mod_response)
+                
                 await self.shared_state.update('modification_response', None)
+                await self.shared_state.update('modification_request', None) # Clear request too
                 self.is_waiting_for_guidance = False
             else:
                 # Still waiting, don't execute tasks
@@ -146,8 +147,31 @@ class MidLevelBrain:
             if game_state:
                 pos = game_state.get('position', {})
                 biome = game_state.get('biome', '')
-                environment = f"位置: ({pos.get('x', '?')}, {pos.get('y', '?')}, {pos.get('z', '?')}), 生物群系: {biome}"
-            self.memory.begin_task(current_goal, environment)
+                inv = game_state.get('inventory', {})
+                inv_str = ", ".join(f"{k}x{v}" for k, v in inv.items()) if inv else "空"
+                try:
+                    pos_str = f"({pos.get('x', 0):.0f}, {pos.get('y', 0):.0f}, {pos.get('z', 0):.0f})"
+                except (TypeError, ValueError):
+                    pos_str = f"({pos.get('x', '?')}, {pos.get('y', '?')}, {pos.get('z', '?')})"
+                environment = (
+                    f"位置: {pos_str}, "
+                    f"生物群系: {biome}, "
+                    f"生命/饥饿: {game_state.get('health', '?')}/{game_state.get('food', '?')}, "
+                    f"时间: {game_state.get('time_label', '?')}, 天气: {game_state.get('weather', '?')}, "
+                    f"背包: [{inv_str}]"
+                )
+            
+            # 从 task_plan 提取步骤描述和战略推理
+            step_descriptions = []
+            strategic = ""
+            if task_plan:
+                steps = task_plan.get('steps', [])
+                step_descriptions = [s.get('description', '') for s in steps if s.get('description')]
+                strategic = task_plan.get('reasoning', '')
+            
+            self.memory.begin_task(current_goal, environment,
+                                   task_plan=step_descriptions,
+                                   strategic_reasoning=strategic)
 
         self._tracked_task_goal = current_goal
 
@@ -265,8 +289,9 @@ class MidLevelBrain:
                 # Notify high-level to move to next step
                 await self.high_brain.mark_step_completed(current_step_index)
                 
-                # 记录到工作记忆
-                self.memory.log("action", f"完成步骤: {current_step.get('description', 'unknown')}")
+                # 记录到工作记忆（代码执行成功处已记录详细的 log，此处不再重复）
+                if self.memory.should_consolidate():
+                    await self.memory.consolidate(self.llm)
             else:
                 # Step failed - LLM has already requested modification or safety limit reached
                 logger.warning(f"Step {current_step_index + 1} execution stopped (modification requested or limit reached)")
@@ -495,11 +520,12 @@ class MidLevelBrain:
         self.is_waiting_for_guidance = True
         logger.info("Waiting for high-level brain guidance...")
     
-    async def _handle_guidance_response(self, response: Dict[str, Any]):
+    async def _handle_guidance_response(self, request: Dict[str, Any], response: Dict[str, Any]):
         """
         Handle guidance response from high-level brain
         
         Args:
+            request: The original modification request that triggered this response
             response: Response from high-level brain
         """
         decision = response.get('decision', 'no_change')
@@ -507,29 +533,32 @@ class MidLevelBrain:
         guidance = response.get('guidance', '')
         player_message = response.get('player_message')
         player_name = response.get('player_name')
+        
+        req_reason = request.get('reason', '') if request else ''
+        req_suggestion = request.get('suggestion', '') if request else ''
+        req_type = request.get('request_type', 'unknown') if request else 'unknown'
 
         logger.info("High-level decision: %s (%s)", decision, explanation or guidance)
-        task_plan = await self.shared_state.get('active_task')
-        if task_plan and task_plan.get('steps'):
-            current_idx = task_plan.get('current_step_index', 0)
-            steps = task_plan.get('steps', [])
-            if 0 <= current_idx < len(steps):
-                current_step = steps[current_idx]
-                if 'modification_requested' in current_step:
-                    del current_step['modification_requested']
-                    logger.debug(f"Cleared modification_requested flag from step {current_idx + 1}")
-                
-                # Reset failed steps to pending based on high-level decision
-                if current_step.get('status') == 'failed':
-                    if decision == 'pushed_sub_task':
-                        # Sub-task was added - reset to pending to retry after sub-task completes
-                        current_step['status'] = 'pending'
-                        logger.info(f"Reset step {current_idx + 1} to 'pending' - will retry after sub-task completes")
-                    elif decision == 'no_change':
-                        # High-level says to continue trying - reset to pending
+
+        # For 'pushed_sub_task': parent step is already reset in
+        # task_handler._reset_parent_step_for_sub_task() before the sub-task
+        # was pushed; active_task now points to the sub-task, nothing to do here.
+        #
+        # For 'no_change': active_task is still the parent; reset its failed step
+        # so mid-level will retry.
+        #
+        # For 'updated_task' / 'discarded_task': the task will be replaced/removed.
+        if decision == 'no_change':
+            task_plan = await self.shared_state.get('active_task')
+            if task_plan and task_plan.get('steps'):
+                current_idx = task_plan.get('current_step_index', 0)
+                steps = task_plan.get('steps', [])
+                if 0 <= current_idx < len(steps):
+                    current_step = steps[current_idx]
+                    current_step.pop('modification_requested', None)
+                    if current_step.get('status') == 'failed':
                         current_step['status'] = 'pending'
                         logger.info(f"Reset step {current_idx + 1} to 'pending' - high-level says continue trying")
-                    # For 'updated_task' and 'discarded_task', the task/step will be replaced/removed anyway
 
         if player_message and player_name:
             await self._send_chat_response(player_message, player_name)
@@ -545,10 +574,43 @@ class MidLevelBrain:
                 current_idx = task_plan.get('current_step_index', 0)
                 current_step = task_plan['steps'][min(current_idx, len(task_plan['steps']) - 1)]
                 lesson = explanation or guidance or 'High-level plan adjustment.'
-                self.memory.log("observation", f"经验教训: {lesson}")
+                game_state = await self.shared_state.get('game_state')
+                # 记录高层决策的详细推理到工作记忆，将请求和响应组合在一起
+                self.memory.log(
+                    "reasoning",
+                    f"向高层申请[{req_type}]: {req_reason}。高层的最终决策为 [{decision}]: {lesson}",
+                    game_state=game_state,
+                    metadata={
+                        "request_type": req_type,
+                        "request_reason": req_reason,
+                        "request_suggestion": req_suggestion,
+                        "decision": decision,
+                        "explanation": explanation,
+                        "guidance": guidance
+                    },
+                    preserve=True
+                )
+                if self.memory.should_consolidate():
+                    await self.memory.consolidate(self.llm)
 
         elif decision in ('discarded_task', 'rejected_player_task'):
-            self.memory.log("observation", f"任务被放弃: {explanation or guidance}")
+            game_state = await self.shared_state.get('game_state')
+            self.memory.log(
+                "reasoning",
+                f"向高层申请[{req_type}]: {req_reason}。高层的最终决策为 [{decision}]: 任务被放弃 - {explanation or guidance}",
+                game_state=game_state,
+                metadata={
+                    "request_type": req_type,
+                    "request_reason": req_reason,
+                    "request_suggestion": req_suggestion,
+                    "decision": decision,
+                    "explanation": explanation,
+                    "guidance": guidance
+                },
+                preserve=True
+            )
+            if self.memory.should_consolidate():
+                await self.memory.consolidate(self.llm)
             # 任务被放弃，结束工作记忆并反思
             self.memory.end_task("abandoned", explanation or guidance or '')
             await self.memory.crystallize(self.llm)
@@ -557,6 +619,21 @@ class MidLevelBrain:
         else:
             # Treat as guidance only
             logger.info("Guidance from high-level: %s", guidance)
+            game_state = await self.shared_state.get('game_state')
+            self.memory.log(
+                "reasoning",
+                f"向高层申请[{req_type}]: {req_reason}。高层给予了指导({decision}): {guidance}",
+                game_state=game_state,
+                metadata={
+                    "request_type": req_type,
+                    "decision": decision,
+                    "explanation": explanation,
+                    "guidance": guidance
+                },
+                preserve=True
+            )
+            if self.memory.should_consolidate():
+                await self.memory.consolidate(self.llm)
     
     async def _execute_step_by_code_generation(
         self,
@@ -634,10 +711,21 @@ class MidLevelBrain:
                 logger.info(f"LLM Analysis: {analysis}")
                 logger.info(f"LLM Decision: {decision}")
                 
+                # 记录LLM的代码生成推理到工作记忆
+                game_state_for_reasoning = await self.shared_state.get('game_state')
+                self.memory.log(
+                    "reasoning",
+                    f"代码生成分析（当前步骤: {step_description}, 第{attempt}次尝试, 决策: {decision}）: {analysis}",
+                    detail=f"生成的代码:\n{code_from_json}" if code_from_json else None,
+                    game_state=game_state_for_reasoning,
+                )
+                if self.memory.should_consolidate():
+                    await self.memory.consolidate(self.llm)
+
                 # Handle decision to request modification
                 if decision == 'request_modification':
                     logger.warning(f"LLM requests modification: {modification_request}")
-                    
+
                     # Request help from high-level brain
                     await self._request_modification(
                         request_type='stuck_task',
@@ -697,14 +785,41 @@ class MidLevelBrain:
                 output = result.get('message', 'Code executed successfully')
                 logger.info(f"Step completed: {output}")
                 
-                self.memory.log("action", f"代码执行成功: {step.get('description')}")
+                game_state = await self.shared_state.get('game_state')
+                self.memory.log(
+                    "code_attempt",
+                    f"代码执行成功: {step.get('description')}",
+                    detail=f"输出: {output}\n代码:\n{code}",
+                    game_state=game_state,
+                    metadata={
+                        "outcome": "success",
+                        "attempt": attempt
+                    },
+                    preserve=True
+                )
+                if self.memory.should_consolidate():
+                    await self.memory.consolidate(self.llm)
                 
                 return True
             
             error_msg = result.get('message', 'Unknown error during execution')
             logger.warning(f"Code execution failed: {error_msg}")
             
-            self.memory.log("failure", f"代码执行失败: {step.get('description')}", detail=error_msg)
+            game_state = await self.shared_state.get('game_state')
+            self.memory.log(
+                "code_attempt",
+                f"代码执行失败: {step.get('description')}",
+                detail=f"错误: {error_msg}\n代码:\n{code}",
+                game_state=game_state,
+                metadata={
+                    "error_msg": error_msg,
+                    "outcome": "failure",
+                    "attempt": attempt
+                },
+                preserve=True
+            )
+            if self.memory.should_consolidate():
+                await self.memory.consolidate(self.llm)
             
             step['last_error'] = error_msg
             return False
@@ -794,7 +909,7 @@ class MidLevelBrain:
         # Use PromptManager to render code generation prompt
         # All variables auto-resolved from config (including $CODE_DOCS)
         prompt = await self.prompt_manager.render(
-            'mid_level/coding.txt',
+            'mid_level/coding.md',
             context={
                 'state': state,
                 'memory_manager': self.memory,
@@ -1060,7 +1175,11 @@ class MidLevelBrain:
                 # Update player description if provided
                 player_description = chat_result.get('update_player_description')
                 if player_description and isinstance(player_description, str) and player_description.strip():
-                    self.memory.log("interaction", f"与 {player} 交流，印象: {player_description}")
+                    game_state = await self.shared_state.get('game_state')
+                    self.memory.log("interaction", f"与 {player} 交流，印象: {player_description}",
+                                    game_state=game_state)
+                    if self.memory.should_consolidate():
+                        await self.memory.consolidate(self.llm)
                     logger.info(f"Updated player description for {player}")
             
             task_desc = chat_result.get('task')
@@ -1088,7 +1207,7 @@ class MidLevelBrain:
         """
         Process chat message and extract response + potential task
         
-        Uses unified chat_handler.txt prompt to get both message and task in one LLM call.
+        Uses unified chat_handler.md prompt to get both message and task in one LLM call.
         
         Args:
             player: Player name
@@ -1106,7 +1225,7 @@ class MidLevelBrain:
             state = await self.shared_state.get_all()
             
             prompt = await self.prompt_manager.render(
-                'mid_level/chat_handler.txt',
+                'mid_level/chat_handler.md',
                 context={
                     'state': state,
                     'memory_manager': self.memory,

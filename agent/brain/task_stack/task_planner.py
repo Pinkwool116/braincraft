@@ -34,7 +34,7 @@ class TaskPlanner:
         # Use PromptManager to render decomposition prompt
         # All game state variables ($STATS, $INVENTORY, $NAME, etc.) are auto-resolved from state
         prompt = await self.prompt_manager.render(
-            'task_stack/task_decomposition.txt',
+            'task_stack/task_decomposition.md',
             context={
                 'state': state,
                 'memory_manager': self.memory_manager,

@@ -18,6 +18,20 @@ class TaskHandler:
         # Initialize PromptManager
         self.prompt_manager = PromptManager()
 
+    def _reset_parent_step_for_sub_task(self, active_task: Dict[str, Any], step_index: int):
+        """Reset the failed step in the parent task before pushing a sub-task.
+        
+        After the sub-task completes and is popped, the parent task becomes
+        active again. The step must be 'pending' (not 'failed') so the
+        mid-level brain will re-execute it instead of deadlocking.
+        """
+        steps = active_task.get('steps', [])
+        if 0 <= step_index < len(steps):
+            step = steps[step_index]
+            step['status'] = 'pending'
+            step.pop('modification_requested', None)
+            logger.info(f"Reset parent step {step_index + 1} to 'pending' before pushing sub-task")
+
     async def handle_stuck_task(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle internal stuck-task requests from the mid-level brain."""
 
@@ -71,7 +85,7 @@ class TaskHandler:
         
         # Use PromptManager to render stuck task handling prompt
         prompt = await self.prompt_manager.render(
-            'task_stack/handle_stuck_task.txt',
+            'task_stack/handle_stuck_task.md',
             context=context
         )
 
@@ -148,6 +162,7 @@ class TaskHandler:
                 
                 if sub_task:
                     sub_task['parent_goal'] = active_task.get('goal')
+                    self._reset_parent_step_for_sub_task(active_task, step_index)
                     await self.task_stack_manager.push_task_plan(sub_task)
                     result_decision = 'pushed_sub_task'
                 else:
@@ -196,6 +211,7 @@ class TaskHandler:
                 
                 if sub_task:
                     sub_task['parent_goal'] = active_task.get('goal')
+                    self._reset_parent_step_for_sub_task(active_task, step_index)
                     await self.task_stack_manager.push_task_plan(sub_task)
                     result_decision = 'pushed_sub_task'
                 else:
@@ -254,7 +270,7 @@ class TaskHandler:
         
         # Use PromptManager to render player directive handling prompt
         prompt = await self.prompt_manager.render(
-            'task_stack/handle_player_directive.txt',
+            'task_stack/handle_player_directive.md',
             context=context
         )
 

@@ -43,7 +43,8 @@ class HighLevelBrain:
         self.llm = llm_model
         
         agent_name = config.get('agent_name', 'BrainyBot')
-        self.memory_manager = MemoryRouter(agent_name)
+        embedding_config = config.get('embedding', None)
+        self.memory_manager = MemoryRouter(agent_name, embedding_config=embedding_config)
         self.mind_state_manager = MindStateManager(agent_name)
         
         # Initialize Prompt Logger for debugging (controlled by config)
@@ -92,7 +93,6 @@ class HighLevelBrain:
                 await self.shared_state.update('modification_response', response)
                 mod_request['processed'] = True
                 await self.shared_state.update('modification_request', mod_request)
-                self.mental_state.update_mood(stress=min(1.0, self.mental_state.mood['stress'] + 0.1))
                 logger.info("✅ Modification request processed")
                 return
 
@@ -137,7 +137,7 @@ class HighLevelBrain:
         
         # Use PromptManager to render the planning prompt (v2.0 - config-driven)
         prompt = await self.prompt_manager.render(
-            'high_level/planning.txt',
+            'high_level/planning.md',
             context={
                 'state': state,
                 'agent_name': agent_name,
@@ -167,6 +167,19 @@ class HighLevelBrain:
             
             plan = self.task_planner._parse_llm_json(response)
             logger.info(f"Strategic plan: {plan.get('goal', 'N/A')}")
+            
+            # 记录高层规划的思考过程到工作记忆（高层大脑在思考"接下来做什么"时的推理）
+            if plan:
+                self.memory_manager.log(
+                    "reasoning",
+                    f"高层规划思考（决定下一步要做什么）: 目标={plan.get('goal', '')}，理由={plan.get('reasoning', plan.get('strategic_guidance', ''))}",
+                    metadata={
+                        "reasoning": plan.get('reasoning', plan.get('strategic_guidance', '')),
+                        "goal": plan.get('goal', ''),
+                    },
+                    preserve=True
+                )
+            
             return plan or {}
         except Exception as e:
             logger.error(f"Error generating strategic plan: {e}", exc_info=True)

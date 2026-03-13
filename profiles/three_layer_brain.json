@@ -2,7 +2,12 @@
     "agent_name": "BrainyBot",
     "ipc_port": 9000,
     "keys_file": "keys.json",
-    "enable_prompt_logging": false,
+    "enable_prompt_logging": true,
+    "embedding": {
+        "api": "qwen",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "text-embedding-v3"
+    },
     "three_layer_brain_llm": {
         "description": "Configuration for three-layer brain LLM models - Using Qwen by default",
         "_config_notes": {
@@ -20,7 +25,7 @@
                 "top_p": 0.9
             },
             "interval_seconds": 600,
-            "system_prompt_file": "agent/prompts/high_level_planning_prompt.txt"
+            "system_prompt_file": "agent/prompts/high_level_planning_prompt.md"
         },
         "mid_level_brain": {
             "model_name": "qwen-max",
@@ -31,7 +36,7 @@
                 "max_tokens": 8000,
                 "top_p": 0.9
             },
-            "system_prompt_file": "agent/prompts/mid_level_coding_prompt.txt",
+            "system_prompt_file": "agent/prompts/mid_level_coding_prompt.md",
             "interval_seconds": 1,
             "max_task_retries": 3
         },

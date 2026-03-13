@@ -39,7 +39,7 @@ class PromptManager:
         
         # Render with context
         prompt = await manager.render(
-            'high_level/planning.txt',
+            'high_level/planning.md',
             context={
                 'state': game_state,
                 'agent_name': 'BrainyBot',
@@ -136,7 +136,7 @@ class PromptManager:
         Load template from file with caching.
         
         Args:
-            template_path: Relative path to template file (e.g. 'high_level/planning.txt')
+            template_path: Relative path to template file (e.g. 'high_level/planning.md')
         
         Returns:
             Template string
@@ -318,7 +318,7 @@ class PromptManager:
         This is the main entry point for prompt rendering.
         
         Args:
-            template_path: Relative path to template (e.g. 'high_level/planning.txt')
+            template_path: Relative path to template (e.g. 'high_level/planning.md')
             context: Context dictionary with data for variable resolution.
                     Should include: state, agent_name, memory_manager, etc.
             strict: If True, raise ValueError for undefined variables (recommended)
@@ -331,7 +331,7 @@ class PromptManager:
         
         Example:
             prompt = await manager.render(
-                'high_level/planning.txt',
+                'high_level/planning.md',
                 context={
                     'state': game_state,
                     'agent_name': 'BrainyBot',

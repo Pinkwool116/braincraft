@@ -206,6 +206,24 @@ class BrainCoordinator:
             await self.shared_state.update('agent_age_ticks', data.get('agent_age_ticks', 0))
             await self.shared_state.update('agent_age_hours', data.get('agent_age_hours', 0))
             
+            # 组装复合 game_state 供 memory 系统使用
+            await self.shared_state.update('game_state', {
+                'position': data.get('position', {}),
+                'health': data.get('health', 20),
+                'food': data.get('food', 20),
+                'inventory': data.get('inventory', {}),
+                'biome': data.get('biome', 'unknown'),
+                'dimension': data.get('dimension', 'unknown'),
+                'gamemode': data.get('gamemode', 'survival'),
+                'time_of_day': data.get('time_of_day', 0),
+                'time_label': data.get('time_label', 'Night'),
+                'weather': data.get('weather', 'Clear'),
+                'nearby_entities': data.get('nearby_entities', []),
+                'nearby_blocks': data.get('nearby_blocks', []),
+                'surrounding_blocks': data.get('surrounding_blocks', {}),
+                'equipment': data.get('equipment', {}),
+            })
+            
             return {'status': 'ok'}
         
         # Handle chat messages from JavaScript

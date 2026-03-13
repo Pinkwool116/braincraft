@@ -97,4 +97,3 @@ class GraphRetriever:
             
         self.engine.save() # 持久化 access_count 的更新数据
         return result_nodes
-

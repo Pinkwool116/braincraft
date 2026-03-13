@@ -110,8 +110,8 @@ class PromptLogger:
         try:
             base_path = original_filepath.replace('.json', '')
             
-            # Save prompt as separate .txt file for easy reading
-            prompt_file = f"{base_path}_PROMPT.txt"
+            # Save prompt as separate .md file for easy reading
+            prompt_file = f"{base_path}_PROMPT.md"
             with open(prompt_file, 'w', encoding='utf-8') as f:
                 f.write("=" * 80 + "\n")
                 f.write(f"PROMPT - {data['prompt_type']} ({data['brain_layer']} layer)\n")
@@ -119,9 +119,9 @@ class PromptLogger:
                 f.write("=" * 80 + "\n\n")
                 f.write(data['prompt'])
             
-            # Save response as separate .txt file if exists
+            # Save response as separate .md file if exists
             if data.get('response'):
-                response_file = f"{base_path}_RESPONSE.txt"
+                response_file = f"{base_path}_RESPONSE.md"
                 with open(response_file, 'w', encoding='utf-8') as f:
                     f.write("=" * 80 + "\n")
                     f.write(f"RESPONSE - {data['prompt_type']} ({data['brain_layer']} layer)\n")

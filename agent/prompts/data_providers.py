@@ -317,16 +317,23 @@ class DataProviders:
         return buffer.get_buffer_text()
 
     @staticmethod
-    def get_long_term_memory(context: Dict[str, Any]) -> str:
+    async def get_long_term_memory(context: Dict[str, Any]) -> str:
         """
         检索与当前情境相关的长期记忆图谱切片。
         Maps to $LONG_TERM_MEMORY variable.
         """
         memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context_async'):
             return "无相关长期记忆。"
-        # TODO: 传入更好的种子文本（如当前任务描述、环境关键词）而非空列表
-        return memory_manager.retrieve_context(trigger_texts=[])
+        # 从任务描述和环境中提取触发词
+        trigger = []
+        task = context.get('active_task') or context.get('task')
+        if isinstance(task, dict) and task.get('goal'):
+            trigger.append(task['goal'])
+        state = context.get('state', {})
+        if isinstance(state, dict) and state.get('biome'):
+            trigger.append(state['biome'])
+        return await memory_manager.retrieve_context_async(trigger_texts=trigger)
 
     @staticmethod
     def get_task_plan(context: Dict[str, Any]) -> str:
@@ -350,31 +357,34 @@ class DataProviders:
     # ========== Memory Related ==========
     
     @staticmethod
-    def get_players_info(context: Dict[str, Any]) -> str:
+    async def get_players_info(context: Dict[str, Any]) -> str:
         """检索与玩家相关的社交记忆。Maps to $PLAYERS_INFO variable."""
         memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context_async'):
             return ""
-        # TODO: 传入玩家名称作为种子文本，检索社交记忆
-        return memory_manager.retrieve_context(trigger_texts=[])
+        # 使用附近实体中的玩家名作为触发词
+        state = context.get('state', {})
+        entities = state.get('nearby_entities', []) if isinstance(state, dict) else []
+        player_names = [e.get('name', '') for e in entities if isinstance(e, dict) and e.get('type') == 'player']
+        return await memory_manager.retrieve_context_async(trigger_texts=player_names)
 
     @staticmethod
-    def get_player_info(context: Dict[str, Any]) -> str:
+    async def get_player_info(context: Dict[str, Any]) -> str:
         """检索与特定玩家相关的记忆。Maps to $PLAYER_INFO variable."""
         memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context_async'):
             return ""
         player_name = context.get('player_name', '')
         trigger = [player_name] if player_name else []
-        return memory_manager.retrieve_context(trigger_texts=trigger)
+        return await memory_manager.retrieve_context_async(trigger_texts=trigger)
 
     @staticmethod
-    def get_recent_memories(context: Dict[str, Any]) -> str:
+    async def get_recent_memories(context: Dict[str, Any]) -> str:
         """检索近期记忆。Maps to $MEMORY variable."""
         memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context_async'):
             return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
+        return await memory_manager.retrieve_context_async(trigger_texts=[])
 
     @staticmethod
     def get_timestamp(context: Dict[str, Any]) -> str:
@@ -556,12 +566,12 @@ This step: {current_step.get('description', 'Unknown')}"""
     # ========== New Memory System (Graph-based) ==========
 
     @staticmethod
-    def get_memory_context(context: Dict[str, Any]) -> str:
+    async def get_memory_context(context: Dict[str, Any]) -> str:
         """通用记忆上下文检索。"""
         memory_manager = context.get('memory_manager')
-        if not memory_manager or not hasattr(memory_manager, 'retrieve_context'):
+        if not memory_manager or not hasattr(memory_manager, 'retrieve_context_async'):
             return ""
-        return memory_manager.retrieve_context(trigger_texts=[])
+        return await memory_manager.retrieve_context_async(trigger_texts=[])
 
 
 # Export function mapping dictionary
