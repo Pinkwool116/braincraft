@@ -1,14 +1,19 @@
 """
-Brain Module
+Agent Brain Module
 
 Agent Loop + Reflex architecture.
-(Phase 1: cleaned — old layer classes removed)
 """
 
 from .brain_coordinator import BrainCoordinator
 from .execution_coordinator import ExecutionCoordinator
+from .agent_loop_layer import AgentLoopLayer
+from .execution_layer import ExecutionLayer
+from .reflex_layer import ReflexLayer
 
 __all__ = [
     'BrainCoordinator',
     'ExecutionCoordinator',
+    'AgentLoopLayer',
+    'ExecutionLayer',
+    'ReflexLayer',
 ]

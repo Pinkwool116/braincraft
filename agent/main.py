@@ -17,7 +17,7 @@ if sys.platform == 'win32':
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from brain.three_layer_brain.brain_coordinator import BrainCoordinator
+from brain.agent_brain.brain_coordinator import BrainCoordinator
 from bridge.ipc_server import IPCServer
 from utils.logger import setup_logger
 
@@ -32,7 +32,7 @@ async def load_config(profile_path: str = None):
         Configuration dictionary
     """
     if not profile_path:
-        profile_path = "profiles/three_layer_brain.json"
+        profile_path = "profiles/agent_brain.json"
 
     logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from {profile_path}")

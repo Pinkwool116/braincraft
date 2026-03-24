@@ -2,7 +2,7 @@
 Brain Coordinator
 
 Coordinates the Agent Loop + Reflex architecture.
-(Phase 1: cleaned of old three-layer logic; core loops not yet implemented)
+Initializes all layers, tools, and manages lifecycle.
 """
 
 import sys
@@ -10,6 +10,11 @@ import asyncio
 import logging
 from typing import Dict, Any
 from .execution_coordinator import ExecutionCoordinator
+from .agent_loop_layer import AgentLoopLayer
+from .execution_layer import ExecutionLayer
+from .reflex_layer import ReflexLayer
+from ..tools import ToolRegistry
+from ..task_manager import TaskFileManager
 from llm.llm_wrapper import create_llm_model
 
 logger = logging.getLogger(__name__)
@@ -90,7 +95,13 @@ class SharedState:
 class BrainCoordinator:
     """
     Coordinates the Agent Loop + Reflex brain system.
-    (Phase 1: cleaned skeleton — Agent Loop and Reflex Layer not yet implemented)
+
+    Initializes and manages:
+    - AgentLoopLayer: Main decision loop (LLM + tool calling)
+    - ExecutionLayer: Code generation and execution
+    - ReflexLayer: Survival reflexes and automatic behaviors
+    - ToolRegistry: Available tools for the Agent Loop
+    - TaskFileManager: File-based task tracking
     """
 
     def __init__(self, ipc_server, config):
@@ -103,16 +114,26 @@ class BrainCoordinator:
         # Shutdown flag
         self.shutdown_requested = False
 
-        # TODO (Phase 2/3): Initialize AgentLoopLayer, ExecutionLayer, ReflexLayer, ToolRegistry
-
-        # Create execution coordinator (kept for Reflex Layer interrupt mechanism)
+        # Execution coordinator (priority-based interrupt mechanism)
         self.exec_coordinator = ExecutionCoordinator(
             shared_state=self.shared_state,
-            high_brain=None,  # No longer needed; will be updated in Phase 3
+            high_brain=None,
             ipc_server=self.ipc_server
         )
 
-        logger.info("Brain coordinator initialized (Phase 1 skeleton)")
+        # TODO (Phase 3): Initialize LLM models from config
+        # agent_loop_llm = self._create_llm('agent_loop')
+        # coding_llm = self._create_llm('coding')
+
+        # TODO (Phase 3): Initialize layers and tools
+        # self.task_manager = TaskFileManager(config.get('agent_name', 'BrainyBot'))
+        # self.tool_registry = ToolRegistry()
+        # self.execution_layer = ExecutionLayer(...)
+        # self.reflex_layer = ReflexLayer(...)
+        # self._register_tools()
+        # self.agent_loop = AgentLoopLayer(...)
+
+        logger.info("Brain coordinator initialized")
 
         # Register IPC message handlers
         self._register_ipc_handlers()
@@ -301,18 +322,31 @@ class BrainCoordinator:
                 sys.exit(1)
 
     async def start(self):
-        """Start the brain system"""
-        logger.info("Starting brain system (Phase 1 skeleton — no active loops)...")
+        """Start the brain system — launches Agent Loop and Reflex Layer"""
+        logger.info("Starting brain system...")
 
-        # TODO (Phase 2/3): Start _run_agent_loop and _run_reflex tasks
         self.brain_tasks = []
 
-        # For now, just keep alive until shutdown
+        # TODO (Phase 3): Start actual loops
+        # self.brain_tasks.append(asyncio.create_task(self._run_agent_loop()))
+        # self.brain_tasks.append(asyncio.create_task(self._run_reflex()))
+
+        # Keep alive until shutdown
         try:
             while not self.shutdown_requested:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
             logger.info("Brain coordinator cancelled")
+
+    async def _run_agent_loop(self):
+        """Run the Agent Loop Layer (main decision loop)"""
+        # TODO (Phase 3): Wait for bot_ready, then start agent_loop.run_loop()
+        raise NotImplementedError("Phase 3: implement _run_agent_loop")
+
+    async def _run_reflex(self):
+        """Run the Reflex Layer (survival reflexes)"""
+        # TODO (Phase 3): Wait for bot_ready, then start reflex_layer.run()
+        raise NotImplementedError("Phase 3: implement _run_reflex")
 
     async def cancel_all_tasks(self):
         """Cancel all running brain tasks"""
