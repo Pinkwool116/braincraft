@@ -13,9 +13,7 @@
 - **code（代码/代码尝试）**: 基于上述分析生成并执行的具体代码，以及执行结果（成功或失败及错误信息）。
 - **decision（决策）**: 代码生成LLM做出的关于任务执行的决策，可能的类型包括：
   - `execute_code`: 正常执行生成的代码
-  - `request_modification`: 请求高层修改当前任务（当中层判断当前步骤无法完成或需要调整时）
-  - 其他高层决策如 `modify_step`, `retry_step`, `skip_step`, `discarded_task` 等
-- **modification_request（修改请求）**: 当decision为request_modification时，描述请求的具体修改内容和原因。
+  - 其他决策如 `retry_step`, `skip_step` 等
 
 此外还可能包含：与玩家的交互记录、环境观察、高层战略决策等。
 标记为[重要/PRESERVED]的条目包含特别关键的信息。

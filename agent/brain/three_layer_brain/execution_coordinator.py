@@ -49,7 +49,7 @@ class ExecutionCoordinator:
         
         Args:
             shared_state: Shared state object
-            high_brain: High-level brain reference (for interrupting contemplation)
+            high_brain: Reserved for future use (was: high-level brain reference)
             ipc_server: IPC server reference (for synchronizing interrupt flag to JavaScript)
         """
         self.shared_state = shared_state

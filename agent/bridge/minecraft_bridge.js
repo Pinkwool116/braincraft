@@ -1,8 +1,8 @@
 /**
- * Three-Layer Brain Bridge
- * 
- * Connects JavaScript Mineflayer bot to Python Three-Layer Brain system via IPC (ZeroMQ).
- * 
+ * Brain Bridge
+ *
+ * Connects JavaScript Mineflayer bot to Python Agent Brain system via IPC (ZeroMQ).
+ *
  * Responsibilities:
  * - Initialize Mineflayer bot and connect to Minecraft server
  * - Send game state updates to Python brain
@@ -41,7 +41,7 @@ const __dirname = path.dirname(__filename);
 
 // Load configuration from project root (2 levels up from agent/bridge)
 const projectRoot = path.resolve(__dirname, '../..');
-const configPath = path.join(projectRoot, 'profiles', 'three_layer_brain.json');
+const configPath = path.join(projectRoot, 'profiles', 'agent_brain.json');
 
 console.log('Loading config from:', configPath);
 

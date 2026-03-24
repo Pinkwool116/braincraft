@@ -271,31 +271,28 @@ def validate_json_fields(
 
 def parse_code_generation_response(response: str) -> Dict[str, Any]:
     """
-    Parse LLM code generation response with reflection fields.
-    
-    Expected format (used by mid-level coding brain):
+    Parse LLM code generation response.
+
+    Expected format (used by Execution Layer):
     {
         "analysis": "Analysis of the situation and approach",
-        "decision": "continue|request_modification",
-        "modification_request": "Request for high-level help (if decision=request_modification)",
         "code": "JavaScript code to execute"
     }
-    
+
     Args:
         response: LLM response text from code generation prompt
-    
+
     Returns:
         Parsed dict with code generation fields
-    
+
     Raises:
-        ValueError: If 'decision' field is missing
+        ValueError: If 'code' field is missing
     """
     return parse_json_response(
         response,
-        required_fields=['decision'],
+        required_fields=['code'],
         default_values={
             'analysis': '',
-            'modification_request': '',
             'code': ''
         }
     )

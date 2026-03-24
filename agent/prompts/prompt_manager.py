@@ -331,13 +331,11 @@ class PromptManager:
         
         Example:
             prompt = await manager.render(
-                'high_level/planning.md',
+                'mid_level/coding.md',
                 context={
                     'state': game_state,
                     'agent_name': 'BrainyBot',
                     'memory_manager': self.memory_manager,
-                    'task_stack_manager': self.task_stack_manager,
-                    'high_brain': self
                 }
             )
         """

@@ -8,8 +8,6 @@ Context parameters:
 - state: Game state dictionary (required for most providers)
 - agent_name: Agent name string
 - memory_manager: MemoryRouter instance (five-layer memory system)
-- task_stack_manager: TaskStackManager instance (optional, for task-related providers)
-- high_brain: HighLevelBrain instance (optional, for high-level specific providers)
 - self_awareness: SelfAwareness instance (optional, for agent info)
 - player: Player name string (optional, for player-specific providers)
 - memory_count: Number of memories to retrieve (optional, default: 5)
@@ -283,25 +281,6 @@ class DataProviders:
         state = context.get('state', {})
         return GameStateFormatter.format_nearby_entities(state)
     
-    # ========== High-Level Brain Specific ==========
-    
-    @staticmethod
-    async def get_mind_context(context: Dict[str, Any]) -> str:
-        """
-        Get mind context from high-level brain.
-        Maps to $MIND_CONTEXT variable.
-        
-        Args:
-            context: Must contain 'high_brain' key
-            
-        Returns:
-            Mind context string or empty string
-        """
-        high_brain = context.get('high_brain')
-        if high_brain and hasattr(high_brain, 'get_mind_context_for_prompt'):
-            return await high_brain.get_mind_context_for_prompt()
-        return ""
-    
     @staticmethod
     def get_working_memory(context: Dict[str, Any]) -> str:
         """
@@ -335,25 +314,6 @@ class DataProviders:
             trigger.append(state['biome'])
         return await memory_manager.retrieve_context_async(trigger_texts=trigger)
 
-    @staticmethod
-    def get_task_plan(context: Dict[str, Any]) -> str:
-        """
-        Get current task plan summary.
-        Maps to $TASK_PLAN variable.
-        
-        Args:
-            context: Must contain 'task_stack_manager' key
-            
-        Returns:
-            Task plan summary or "No active tasks"
-        """
-        task_stack_manager = context.get('task_stack_manager')
-        if not task_stack_manager:
-            raise ValueError("task_stack_manager is required in context for get_task_plan")
-        if hasattr(task_stack_manager, 'generate_task_stack_summary'):
-            return task_stack_manager.generate_task_stack_summary()
-        return "No active tasks"
-    
     # ========== Memory Related ==========
     
     @staticmethod
@@ -435,39 +395,6 @@ class DataProviders:
         return context.get('agent_name', 'BrainyBot')
     
     @staticmethod
-    async def get_task_plan_context(context: Dict[str, Any]) -> str:
-        """
-        Get formatted task plan context for mid-level brain code generation.
-        Shows current goal, step progress, and current step description.
-        
-        Args:
-            context: Must contain 'state' dict or 'task_stack_manager'
-        
-        Returns:
-            Formatted task plan context
-        """
-        # Try to get from shared_state/task_stack_manager
-        task_stack_manager = context.get('task_stack_manager')
-        if task_stack_manager and hasattr(task_stack_manager, 'get'):
-            # It's shared_state object
-            task_plan = await task_stack_manager.get('active_task')
-        else:
-            # Fallback to state dict
-            state = context.get('state', {})
-            task_plan = state.get('active_task')
-        
-        if task_plan and task_plan.get('steps'):
-            current_idx = task_plan.get('current_step_index', 0)
-            total_steps = len(task_plan.get('steps', []))
-            goal = task_plan.get('goal', 'Unknown')
-            current_step = task_plan['steps'][min(current_idx, len(task_plan['steps']) - 1)]
-            return f"""Goal: {goal}
-Current Step: {current_idx + 1}/{total_steps}
-This step: {current_step.get('description', 'Unknown')}"""
-        else:
-            return "No active task plan"
-    
-    @staticmethod
     def get_code_docs(context: Dict[str, Any]) -> str:
         """
         Get full API documentation for code generation.
@@ -480,64 +407,6 @@ This step: {current_step.get('description', 'Unknown')}"""
         """
         from prompts.api_docs_generator import get_full_api_docs
         return get_full_api_docs()
-    
-    @staticmethod
-    def get_strategic_goal(context: Dict[str, Any]) -> str:
-        """
-        Get current strategic goal for chat context.
-        
-        Args:
-            context: Must contain 'state' dict
-        
-        Returns:
-            Strategic goal string
-        """
-        state = context.get('state', {})
-        strategic_goal_data = state.get('strategic_goal')
-        
-        if isinstance(strategic_goal_data, dict):
-            return strategic_goal_data.get('goal', 'exploring the world')
-        elif isinstance(strategic_goal_data, str):
-            return strategic_goal_data
-        else:
-            return 'exploring the world'
-    
-    @staticmethod
-    def get_task_stack_summary(context: Dict[str, Any]) -> str:
-        """
-        Get task stack summary for chat context.
-        
-        Args:
-            context: Must contain 'state' dict
-        
-        Returns:
-            Task stack summary string
-        """
-        state = context.get('state', {})
-        return state.get('task_stack_summary', 'No tasks in the stack.')
-    
-    @staticmethod
-    def get_active_task_summary(context: Dict[str, Any]) -> str:
-        """
-        Get active task summary for chat context.
-        
-        Args:
-            context: Must contain 'state' dict
-        
-        Returns:
-            Active task summary string
-        """
-        state = context.get('state', {})
-        active_task_dict = state.get('active_task')
-        
-        if active_task_dict and active_task_dict.get('steps'):
-            current_idx = active_task_dict.get('current_step_index', 0)
-            steps = active_task_dict.get('steps', [])
-            if steps and current_idx < len(steps):
-                current_step = steps[current_idx]
-                return current_step.get('description', 'figuring out what to do next')
-        
-        return 'currently idle'
     
     @staticmethod
     def get_chat_context(context: Dict[str, Any]) -> str:
@@ -597,10 +466,6 @@ PROVIDER_FUNCTIONS = {
     'get_nearby_blocks': DataProviders.get_nearby_blocks,
     'get_nearby_entities': DataProviders.get_nearby_entities,
     
-    # High-level brain specific
-    'get_mind_context': DataProviders.get_mind_context,
-    'get_task_plan': DataProviders.get_task_plan,
-    
     # Memory system
     'get_working_memory': DataProviders.get_working_memory,
     'get_long_term_memory': DataProviders.get_long_term_memory,
@@ -613,12 +478,8 @@ PROVIDER_FUNCTIONS = {
     'get_timestamp': DataProviders.get_timestamp,
     'get_agent_age': DataProviders.get_agent_age,
     'get_agent_name': DataProviders.get_agent_name,
-    'get_task_plan_context': DataProviders.get_task_plan_context,
     'get_code_docs': DataProviders.get_code_docs,
-    
+
     # Chat-specific
-    'get_strategic_goal': DataProviders.get_strategic_goal,
-    'get_task_stack_summary': DataProviders.get_task_stack_summary,
-    'get_active_task_summary': DataProviders.get_active_task_summary,
     'get_chat_context': DataProviders.get_chat_context,
 }

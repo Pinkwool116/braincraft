@@ -1,6 +1,6 @@
 # Prompt Variable Configuration
 #
-# This file defines the mapping from prompt variables ($VARIABLE_NAME) to 
+# This file defines the mapping from prompt variables ($VARIABLE_NAME) to
 # data provider functions in data_providers.py
 #
 # Format: VARIABLE_NAME: function_name
@@ -37,10 +37,6 @@ BLOCK_ABOVE: get_block_above
 NEARBY_BLOCKS: get_nearby_blocks
 NEARBY_ENTITIES: get_nearby_entities
 
-# ========== High-Level Brain Specific ==========
-MIND_CONTEXT: get_mind_context
-TASK_PLAN: get_task_plan
-
 # ========== Memory Related ==========
 WORKING_MEMORY: get_working_memory
 LONG_TERM_MEMORY: get_long_term_memory
@@ -53,70 +49,31 @@ TIMESTAMP: get_timestamp
 AGENT_AGE: get_agent_age
 NAME: get_agent_name
 AGENT_NAME: get_agent_name
-TASK_PLAN_CONTEXT: get_task_plan_context
 CODE_DOCS: get_code_docs
 
 # ========== Chat-Specific Variables ==========
-STRATEGIC_GOAL: get_strategic_goal
-TASK_STACK: get_task_stack_summary
-ACTIVE_TASK: get_active_task_summary
 CHAT_CONTEXT: get_chat_context
 
 # ========== Special Direct Values ==========
 # These are NOT functions - passed directly as lowercase keys in context.
 # They are resolved at Priority 1 (before function providers).
-# 
+#
 # Template Variable -> Context Key (lowercase)
-# 
+#
 # Chat & Communication:
 #   $MESSAGE -> context['message']
 #   $PLAYER_NAME -> context['player_name']
 #   $BOT_RESPONSE -> context['bot_response']
-# 
+#
 # Task & Goal:
 #   $TASK -> context['task']
 #   $GOAL -> context['goal']
-#   $STRATEGIC_GUIDANCE -> context['strategic_guidance']
 #   $EXAMPLES -> context['examples']
-# 
-# Task Decomposition & Handling:
-#   $STEP_DESCRIPTION -> context['step_description']
-#   $STEP_INDEX -> context['step_index']
-#   $FAILURE_LIST -> context['failure_list']
-#   $FAILED_STEP_DESCRIPTION -> context['failed_step_description']
-#   $REASON -> context['reason']
-#   $SUGGESTION -> context['suggestion']
-#   $MID_LEVEL_ANALYSIS -> context['mid_level_analysis']
-#   $MID_LEVEL_DECISION -> context['mid_level_decision']
-#   $ATTEMPT -> context['attempt']
-#   $FAILURE_HISTORY -> context['failure_history']
+#
+# Code Generation:
 #   $EXECUTION_CONTEXT -> context['execution_context']
-# 
-# Task Stack Context:
-#   $STACK_SUMMARY -> context['stack_summary']
-#   $CURRENT_PLAN_TEXT -> context['current_plan_text']
-#   $CURRENT_TASK_TEXT -> context['current_task_text']
-#   $TASK_SOURCE -> context['task_source']
-#   $RECENT_MEMORY_TEXT -> context['recent_memory_text']
-#   $PLAYER_CONTEXT -> context['player_context']
-# 
-# Player Directive Handling:
-#   $DIRECTIVE -> context['directive']
-#   $RELATIONSHIP -> context['relationship']
-#   $TRUST_LEVEL -> context['trust_level']
-#   $PERSONALITY -> context['personality']
-#   $PREFERENCES -> context['preferences']
-# 
-# Experience Summary (future feature - not currently used):
-#   $RECENT_ACTIONS -> context['recent_actions']
-#   $SUCCESSES -> context['successes']
-#   $FAILURES -> context['failures']
-#   $START_BIOME -> context['start_biome']
-#   $END_BIOME -> context['end_biome']
-#   $DURATION -> context['duration']
-# 
+#
 # Note: PromptManager resolution priority:
 #   1. Direct context values (context['key'])
 #   2. Manually registered providers (backward compatibility)
 #   3. Config-mapped providers (this YAML file)
-
