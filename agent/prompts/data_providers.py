@@ -8,7 +8,6 @@ Context parameters:
 - state: Game state dictionary (required for most providers)
 - agent_name: Agent name string
 - memory_manager: MemoryRouter instance (five-layer memory system)
-- self_awareness: SelfAwareness instance (optional, for agent info)
 - player: Player name string (optional, for player-specific providers)
 - memory_count: Number of memories to retrieve (optional, default: 5)
 """

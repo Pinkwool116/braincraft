@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from typing import Dict, Any, Optional
+from prompts.prompt_logger import PromptLogger
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,15 @@ class ExecutionLayer:
         self.prompt_manager = prompt_manager
         self.memory_manager = memory_manager
         self.is_executing = False
+
+        # Prompt Logger
+        agent_name = config.get('agent_name', 'BrainyBot')
+        enable_logging = config.get('enable_prompt_logging', True)
+        self.prompt_logger = PromptLogger(
+            base_dir=config.get('bots_dir', 'bots'),
+            agent_name=agent_name, 
+            enabled=enable_logging
+        )
 
         # Execution result timeout
         self.execution_timeout = config.get('execution', {}).get('timeout', 120)
@@ -99,9 +109,20 @@ class ExecutionLayer:
             # 1. Build coding prompt (system prompt)
             system_prompt = await self._build_coding_prompt(step_description)
 
+            # Log the prompt
+            prompt_file = self.prompt_logger.log_prompt(
+                prompt=f"【System Prompt】\n{system_prompt}\n\n【User Message】\n执行步骤：{step_description}",
+                brain_layer="ExecutionLayer",
+                prompt_type="execute_step"
+            )
+
             # 2. Call Coding LLM
             messages = [{"role": "user", "content": f"执行步骤：{step_description}"}]
             response = await self.coding_llm.send_request(messages, system_prompt=system_prompt)
+
+            # Update prompt log with response
+            if prompt_file and response:
+                self.prompt_logger.update_response(prompt_file, response)
 
             if not response:
                 return {

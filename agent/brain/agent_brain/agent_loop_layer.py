@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 from typing import Dict, Any, Optional, List
+from prompts.prompt_logger import PromptLogger
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,16 @@ class AgentLoopLayer:
         self.last_tool_result = None
         self.consecutive_loops = 0
         self.last_tool_calls: List[dict] = []  # Recent calls for dead loop detection
+        self._is_first_run = True
+
+        # Prompt Logger
+        agent_name = config.get('agent_name', 'BrainyBot')
+        enable_logging = config.get('enable_prompt_logging', True)  # default true or use config
+        self.prompt_logger = PromptLogger(
+            base_dir=config.get('bots_dir', 'bots'),
+            agent_name=agent_name, 
+            enabled=enable_logging
+        )
 
         logger.info("AgentLoopLayer initialized")
 
@@ -99,18 +110,31 @@ class AgentLoopLayer:
                 has_pending_result = self.last_tool_result is not None
 
                 # If idle (no chat, no task, no pending result), sleep
-                if not has_chat and not has_task and not has_pending_result:
+                if not has_chat and not has_task and not has_pending_result and not self._is_first_run:
                     await asyncio.sleep(self.idle_interval)
-                    # Re-check after sleep
-                    if self.chat_queue.empty() and not self.task_manager.read_task().strip():
-                        continue
+                    # We do NOT `continue` here, because we want the agent to 
+                    # wake up every N seconds and potentially decide to do something
+                    # even if there's no explicit task or chat.
+
+                self._is_first_run = False
 
                 # Build prompt
                 prompt = await self.build_prompt()
 
+                # Log the prompt
+                prompt_file = self.prompt_logger.log_prompt(
+                    prompt=prompt,
+                    brain_layer="AgentLoop",
+                    prompt_type="decision_loop"
+                )
+
                 # Call LLM
                 messages = [{"role": "user", "content": prompt}]
                 response = await self.llm.send_request(messages)
+
+                # Update prompt log with response
+                if prompt_file and response:
+                    self.prompt_logger.update_response(prompt_file, response)
 
                 if not response:
                     logger.warning("LLM returned empty response")
@@ -188,6 +212,23 @@ class AgentLoopLayer:
         # Detect repeated tool calls
         repeat_warning = self._check_repeat_calls()
 
+        # Load SOUL from config or soul.md file
+        if not hasattr(self, '_soul_content') or not self._soul_content:
+            soul_content = self.config.get('soul', '')
+            if not soul_content:
+                try:
+                    import os
+                    soul_path = os.path.join(self.prompt_manager.prompts_dir, 'agent_loop', 'soul.md')
+                    if os.path.exists(soul_path):
+                        with open(soul_path, 'r', encoding='utf-8') as f:
+                            soul_content = f.read()
+                    else:
+                        soul_content = "你是一个专业、乐于助人的 Minecraft 智能体。你的主要职责是根据玩家的指示在游戏世界中执行任务。请根据所给的游戏状态聪明地决策。"
+                except Exception as e:
+                    logger.error(f"Failed to load soul.md: {e}")
+                    soul_content = ""
+            self._soul_content = soul_content
+
         # Build context for prompt rendering
         context = {
             'state': state,
@@ -198,7 +239,7 @@ class AgentLoopLayer:
             'PENDING_CHAT': pending_chat if pending_chat else "(无新消息)",
             'TOOL_DESCRIPTIONS': self.tool_registry.get_tool_descriptions(),
             'LAST_TOOL_RESULT': last_result_str,
-            'SOUL': self.config.get('soul', ''),
+            'SOUL': self._soul_content,
         }
 
         prompt = await self.prompt_manager.render(
