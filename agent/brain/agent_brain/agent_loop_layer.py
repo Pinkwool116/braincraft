@@ -141,6 +141,12 @@ class AgentLoopLayer:
                 # Update context
                 self.update_context(tool_call, result)
 
+                # Memory maintenance: consolidate if needed
+                await self._maybe_consolidate()
+
+                # Memory maintenance: crystallize if task was just cleared
+                await self._maybe_crystallize(tool_call, result)
+
                 self.consecutive_loops += 1
 
             except asyncio.CancelledError:
@@ -166,6 +172,9 @@ class AgentLoopLayer:
 
         # Read task file
         task_content = self.task_manager.read_task()
+
+        # Keep working memory context synced with current task
+        self._sync_task_context(task_content)
 
         # Drain chat queue
         pending_chat = self._drain_chat_queue()
@@ -245,11 +254,8 @@ class AgentLoopLayer:
         """
         Add tool call and result to conversation context.
 
-        Updates last_tool_result and records to tool call history.
-
-        Args:
-            tool_call: The tool call that was executed
-            result: The result from tool execution
+        Updates last_tool_result, records to tool call history,
+        and logs a rich entry to working memory.
         """
         self.last_tool_result = {
             'tool': tool_call.get('tool'),
@@ -265,18 +271,79 @@ class AgentLoopLayer:
         if len(self.last_tool_calls) > 10:
             self.last_tool_calls = self.last_tool_calls[-10:]
 
-        # Log to working memory if available
+        # Log to working memory with rich context
         if self.memory_manager and hasattr(self.memory_manager, 'log'):
             try:
-                tool_name = tool_call.get('tool', 'unknown')
-                success = result.get('success', False)
-                self.memory_manager.log(
-                    entry_type='action',
-                    content=f"Used tool '{tool_name}': {'success' if success else 'failed'}",
-                    detail=json.dumps(result, ensure_ascii=False)[:500],
-                )
+                self._log_to_working_memory(tool_call, result)
             except Exception as e:
                 logger.debug(f"Failed to log to working memory: {e}")
+
+    def _log_to_working_memory(self, tool_call: dict, result: dict):
+        """Build and append a rich working memory entry for this tool call."""
+        tool_name = tool_call.get('tool', 'unknown')
+        thinking = tool_call.get('thinking', '')
+        tool_args = tool_call.get('tool_args', {})
+        success = result.get('success', True)
+
+        metadata = {'thinking': thinking[:300]} if thinking else None
+
+        if tool_name == 'execute_step':
+            step_desc = tool_args.get('step_description', '')
+            status = '成功' if success else '失败'
+            detail_parts = [f"结果: {status}"]
+            if result.get('output'):
+                detail_parts.append(f"输出: {result['output'][:300]}")
+            if not success and result.get('error'):
+                detail_parts.append(f"错误: {result['error'][:300]}")
+            self.memory_manager.log(
+                entry_type='action',
+                content=f"执行步骤: {step_desc}",
+                detail='\n'.join(detail_parts),
+                metadata=metadata,
+            )
+
+        elif tool_name == 'chat':
+            message = tool_args.get('message', '')
+            self.memory_manager.log(
+                entry_type='interaction',
+                content=f"发送消息: {message}",
+                metadata=metadata,
+            )
+
+        elif tool_name == 'recall_memory':
+            query = tool_args.get('query', '')
+            memories = result.get('memories', '')
+            self.memory_manager.log(
+                entry_type='reasoning',
+                content=f"查询记忆: {query}",
+                detail=memories[:300] if memories else None,
+                metadata=metadata,
+            )
+
+        elif tool_name == 'update_task':
+            action = tool_args.get('action', 'write')
+            content_preview = str(tool_args.get('content', ''))[:100]
+            self.memory_manager.log(
+                entry_type='reasoning',
+                content=f"更新任务文件 (action={action}): {content_preview}",
+                metadata=metadata,
+            )
+
+        elif tool_name == 'interrupt_execution':
+            self.memory_manager.log(
+                entry_type='action',
+                content='中断代码执行',
+                detail=json.dumps(result, ensure_ascii=False)[:200],
+                metadata=metadata,
+            )
+
+        else:
+            self.memory_manager.log(
+                entry_type='action',
+                content=f"调用工具 '{tool_name}'",
+                detail=json.dumps(result, ensure_ascii=False)[:300],
+                metadata=metadata,
+            )
 
     def enqueue_chat(self, player: str, message: str):
         """
@@ -333,3 +400,47 @@ class AgentLoopLayer:
             )
 
         return ''
+
+    async def _maybe_consolidate(self):
+        """Trigger working memory rolling consolidation if threshold reached."""
+        if not self.memory_manager:
+            return
+        try:
+            if self.memory_manager.should_consolidate():
+                logger.debug("Triggering working memory consolidation...")
+                await self.memory_manager.consolidate(self.llm)
+        except Exception as e:
+            logger.debug(f"Working memory consolidation failed: {e}")
+
+    async def _maybe_crystallize(self, tool_call: dict, result: dict):
+        """
+        Trigger crystallize (working memory → long-term graph) when task is cleared.
+
+        Crystallize when the agent calls update_task with action='clear', or
+        writes empty content — meaning the current task episode has ended.
+        """
+        if not self.memory_manager:
+            return
+        tool_name = tool_call.get('tool')
+        if tool_name != 'update_task':
+            return
+        action = tool_call.get('tool_args', {}).get('action', '')
+        content = tool_call.get('tool_args', {}).get('content', '')
+        if action == 'clear' or (action == 'write' and not content.strip()):
+            try:
+                logger.info("Task cleared — crystallizing working memory to long-term graph...")
+                await self.memory_manager.crystallize(self.llm)
+            except Exception as e:
+                logger.warning(f"Memory crystallize failed: {e}")
+
+    def _sync_task_context(self, task_content: str):
+        """Keep working memory context.goal in sync with the current task.md content."""
+        if not self.memory_manager:
+            return
+        try:
+            wm = self.memory_manager.working_memory
+            goal = task_content.strip()[:300] if task_content.strip() else '（空闲）'
+            if wm.context.get('goal') != goal:
+                wm.context['goal'] = goal
+        except Exception:
+            pass

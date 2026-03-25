@@ -22,6 +22,7 @@ from ..tools.interrupt_tool import InterruptTool
 from ..task_manager import TaskFileManager
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
+from data_manager.memory_graph import MemoryRouter
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,16 @@ class BrainCoordinator:
         # Task file manager
         self.task_manager = TaskFileManager(config.get('agent_name', 'BrainyBot'))
 
+        # Memory router (working memory + long-term memory graph)
+        enable_logging = config.get('enable_prompt_logging', True)
+        embedding_config = config.get('embedding', None)
+        self.memory_manager = MemoryRouter(
+            agent_name=config.get('agent_name', 'BrainyBot'),
+            enable_logging=enable_logging,
+            embedding_config=embedding_config,
+        )
+        logger.info("MemoryRouter initialized")
+
         # Tool registry
         self.tool_registry = ToolRegistry()
 
@@ -153,10 +164,8 @@ class BrainCoordinator:
             config=config,
             coding_llm=self.coding_llm,
             prompt_manager=self.prompt_manager,
-            memory_manager=None,  # Phase 4: integrate MemoryRouter
+            memory_manager=self.memory_manager,  # MemoryRouter integrated
         )
-
-        # Reflex layer
         self.reflex_layer = ReflexLayer(
             shared_state=self.shared_state,
             exec_coordinator=self.exec_coordinator,
@@ -176,7 +185,7 @@ class BrainCoordinator:
             llm_model=self.agent_loop_llm,
             prompt_manager=self.prompt_manager,
             task_manager=self.task_manager,
-            memory_manager=None,  # Phase 4: integrate MemoryRouter
+            memory_manager=self.memory_manager,  # MemoryRouter integrated
         )
 
         # Set agent name in shared state (sync, before event loop starts)
@@ -374,7 +383,7 @@ class BrainCoordinator:
         self.tool_registry.register('execute_step', ExecuteStepTool(self.execution_layer))
         self.tool_registry.register('chat', ChatTool(self.execution_layer))
         self.tool_registry.register('update_task', UpdateTaskTool(self.task_manager))
-        self.tool_registry.register('recall_memory', RecallMemoryTool(None))  # Phase 4: MemoryRouter
+        self.tool_registry.register('recall_memory', RecallMemoryTool(self.memory_manager))
         self.tool_registry.register('interrupt_execution', InterruptTool(self.execution_layer))
         logger.info(f"Registered {len(self.tool_registry._tools)} tools")
 
@@ -386,7 +395,6 @@ class BrainCoordinator:
 
         self.brain_tasks.append(asyncio.create_task(self._run_agent_loop()))
         self.brain_tasks.append(asyncio.create_task(self._run_reflex()))
-
         # Keep alive until shutdown
         try:
             while not self.shutdown_requested:
@@ -429,4 +437,13 @@ class BrainCoordinator:
         self.agent_loop.running = False
         self.reflex_layer.stop()
         await self.cancel_all_tasks()
+
+        # Crystallize working memory on shutdown
+        if self.memory_manager:
+            try:
+                logger.info("Crystallizing working memory before shutdown...")
+                await self.memory_manager.crystallize(self.agent_loop_llm)
+            except Exception as e:
+                logger.warning(f"Memory crystallize on shutdown failed: {e}")
+
         logger.info("Brain coordinator shutdown complete")

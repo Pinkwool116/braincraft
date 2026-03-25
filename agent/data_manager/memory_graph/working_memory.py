@@ -252,62 +252,63 @@ class WorkingMemoryBuffer:
 
     def get_buffer_text(self) -> str:
         """
-        将工作记忆格式化为 LLM 可消费的文本，供反思（crystallize）使用。
+        将工作记忆格式化为可嵌入系统提示词的文本。
+        使用轻量标记（无 ## 标题）避免在提示词中产生多余的标题层级。
         """
-        if not self.timeline:
-            return ""
+        if not self.timeline and not self.consolidated_summary:
+            return "（暂无工作记忆）"
 
         lines = []
 
         # 任务背景
         if self.context:
-            lines.append(f"## 任务背景")
-            lines.append(f"目标: {self.context.get('goal', '未知')}")
+            goal = self.context.get('goal', '未知')
+            lines.append(f"【当前目标】{goal}")
             if self.context.get('strategic_reasoning'):
-                lines.append(f"战略分析: {self.context['strategic_reasoning']}")
+                lines.append(f"【战略分析】{self.context['strategic_reasoning']}")
             if self.context.get('task_plan'):
-                lines.append("执行计划:")
-                for i, step in enumerate(self.context['task_plan'], 1):
-                    lines.append(f"  {i}. {step}")
+                steps = '、'.join(self.context['task_plan'][:5])
+                lines.append(f"【执行计划】{steps}")
             if self.context.get('environment'):
-                lines.append(f"环境: {self.context['environment']}")
-            lines.append("")
+                lines.append(f"【环境】{self.context['environment']}")
 
         # 已压缩的滚动摘要
         if self.consolidated_summary:
-            lines.append(f"## 已整理的经历摘要")
-            lines.append(self.consolidated_summary)
             lines.append("")
+            lines.append("▸ 经历摘要")
+            lines.append(self.consolidated_summary)
 
-        # 尚未压缩的原始条目
+        # 尚未压缩的原始条目（最多显示最新 20 条，避免过长）
         if self.timeline:
-            lines.append(f"## 最新经历 ({len(self.timeline)} 条记录)")
-            for entry in self.timeline:
+            visible = self.timeline[-20:]
+            lines.append("")
+            lines.append(f"▸ 最新记录（共 {len(self.timeline)} 条，显示最新 {len(visible)} 条）")
+            for entry in visible:
                 type_tag = entry.get("type", "unknown").upper()
                 content = entry.get("content", "")
-                preserved_tag = "[重要/PRESERVED] " if entry.get("preserve") else ""
-                line = f"- {preserved_tag}[{type_tag}] {content}"
+                preserved_tag = "[重要] " if entry.get("preserve") else ""
+                line = f"· {preserved_tag}[{type_tag}] {content}"
                 if entry.get("detail"):
-                    line += f"\n  详情: {entry['detail']}"
-                # 展示 metadata 中的结构化信息
+                    line += f"\n  └ {entry['detail']}"
                 meta = entry.get("metadata")
                 if meta:
-                    meta_parts = [f"{k}: {v}" for k, v in meta.items()
-                                  if v and k not in ('snapshot',)]
-                    if meta_parts:
-                        line += f"\n  附加: {'; '.join(meta_parts)}"
+                    thinking = meta.get('thinking', '')
+                    if thinking:
+                        line += f"\n  └ 思考: {thinking}"
+                    other = {k: v for k, v in meta.items() if k != 'thinking' and v}
+                    if other:
+                        line += f"\n  └ 附加: {'; '.join(f'{k}={v}' for k,v in other.items())}"
                 snapshot_text = self._format_snapshot(entry.get("snapshot"))
                 if snapshot_text:
                     line += f"\n  {snapshot_text.strip(' |')}"
                 lines.append(line)
-            lines.append("")
 
         # 结果
         if self.outcome:
-            lines.append(f"## 任务结果")
-            lines.append(f"结果: {self.outcome.get('result', '未知')}")
-            if self.outcome.get('summary'):
-                lines.append(f"总结: {self.outcome['summary']}")
+            lines.append("")
+            result_label = self.outcome.get('result', '未知')
+            summary = self.outcome.get('summary', '')
+            lines.append(f"【任务结果】{result_label}" + (f"：{summary}" if summary else ""))
 
         return "\n".join(lines)
 

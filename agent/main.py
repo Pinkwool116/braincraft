@@ -71,7 +71,31 @@ async def main():
         # Load configuration
         logger.info("Loading configuration...")
         config = await load_config()
-        logger.info(f"Agent: {config.get('agent_name', 'BrainyBot')}")
+        agent_name = config.get('agent_name', 'BrainyBot')
+        logger.info(f"Agent: {agent_name}")
+
+        # Validate new-style config sections
+        if 'agent_loop' not in config:
+            logger.warning("Config missing 'agent_loop' section — check profiles/agent_brain.json")
+        else:
+            loop_model = config['agent_loop'].get('model_name', '?')
+            loop_api = config['agent_loop'].get('api', '?')
+            logger.info(f"Agent Loop model: {loop_model} ({loop_api})")
+
+        if 'execution' not in config:
+            logger.warning("Config missing 'execution' section — check profiles/agent_brain.json")
+        else:
+            exec_model = config['execution'].get('model_name', '?')
+            exec_api = config['execution'].get('api', '?')
+            logger.info(f"Execution model: {exec_model} ({exec_api})")
+
+        if 'memory' in config:
+            logger.info(f"Memory: consolidate_interval={config['memory'].get('consolidate_interval', 5)}, "
+                        f"crystallize={config['memory'].get('enable_crystallize', True)}")
+
+        if 'embedding' in config:
+            embed_model = config['embedding'].get('model', '?')
+            logger.info(f"Embedding model: {embed_model}")
 
         # Initialize IPC server for communication with JavaScript
         ipc_port = config.get('ipc_port', 9000)
