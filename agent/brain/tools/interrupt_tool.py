@@ -31,7 +31,7 @@ class InterruptTool:
         Args:
             execution_layer: ExecutionLayer instance
         """
-        raise NotImplementedError("Phase 3: implement __init__")
+        self.execution_layer = execution_layer
 
     async def execute(self, args: dict) -> dict:
         """
@@ -43,4 +43,4 @@ class InterruptTool:
         Returns:
             {'success': bool, 'was_executing': bool}
         """
-        raise NotImplementedError("Phase 3: implement execute")
+        return await self.execution_layer.interrupt()

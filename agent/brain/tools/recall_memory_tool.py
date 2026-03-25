@@ -1,8 +1,8 @@
 """
 Recall Memory Tool
 
-Retrieves relevant memories from the memory system.
-Allows the agent to access past experiences and knowledge.
+Retrieves relevant memories from the agent's long-term memory.
+Used when the agent needs to recall past experiences or knowledge.
 """
 
 import logging
@@ -15,8 +15,9 @@ class RecallMemoryTool:
     """
     Tool: recall_memory
 
-    Query the memory system for relevant past experiences.
-    Use this when you need information from past gameplay.
+    Retrieve relevant memories from past experiences.
+    Use this to recall how you solved similar problems before,
+    what resources you found, or important locations.
     """
 
     name: str = "recall_memory"
@@ -29,18 +30,30 @@ class RecallMemoryTool:
     def __init__(self, memory_manager):
         """
         Args:
-            memory_manager: Memory manager instance (MemoryRouter or similar)
+            memory_manager: MemoryRouter instance (can be None)
         """
-        raise NotImplementedError("Phase 3: implement __init__")
+        self.memory_manager = memory_manager
 
     async def execute(self, args: dict) -> dict:
         """
-        Recall memories.
+        Query memory system.
 
         Args:
-            args: {'query': str} — what to search for in memory
+            args: {'query': str}
 
         Returns:
             {'success': bool, 'memories': str}
         """
-        raise NotImplementedError("Phase 3: implement execute")
+        if self.memory_manager is None:
+            return {'success': False, 'error': 'Memory system not available'}
+
+        query = args.get('query', '')
+        if not query:
+            return {'success': False, 'error': 'No query provided'}
+
+        try:
+            memories = await self.memory_manager.retrieve_context_async([query])
+            return {'success': True, 'memories': memories if memories else '(no relevant memories found)'}
+        except Exception as e:
+            logger.error(f"RecallMemoryTool error: {e}")
+            return {'success': False, 'error': str(e)}

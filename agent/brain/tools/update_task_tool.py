@@ -30,7 +30,7 @@ class UpdateTaskTool:
         Args:
             task_file_manager: TaskFileManager instance
         """
-        raise NotImplementedError("Phase 3: implement __init__")
+        self.task_file_manager = task_file_manager
 
     async def execute(self, args: dict) -> dict:
         """
@@ -45,4 +45,21 @@ class UpdateTaskTool:
         Returns:
             {'success': bool, 'content': str}
         """
-        raise NotImplementedError("Phase 3: implement execute")
+        action = args.get('action', 'read')
+
+        try:
+            if action == 'read':
+                content = self.task_file_manager.read_task()
+                return {'success': True, 'content': content}
+            elif action == 'write':
+                content = args.get('content', '')
+                self.task_file_manager.write_task(content)
+                return {'success': True, 'content': content}
+            elif action == 'clear':
+                self.task_file_manager.clear_task()
+                return {'success': True, 'content': ''}
+            else:
+                return {'success': False, 'error': f'Unknown action: {action}'}
+        except Exception as e:
+            logger.error(f"UpdateTaskTool error: {e}")
+            return {'success': False, 'error': str(e)}

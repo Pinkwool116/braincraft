@@ -2,6 +2,7 @@
 Chat Tool
 
 Sends chat messages in the Minecraft game.
+The agent uses this to communicate with players.
 """
 
 import logging
@@ -14,28 +15,32 @@ class ChatTool:
     """
     Tool: chat
 
-    Sends a message in the Minecraft game chat.
-    Use this to communicate with players.
+    Send a chat message in the Minecraft game to communicate with players.
     """
 
     name: str = "chat"
-    description: str = "Send a chat message in the Minecraft game to communicate with players."
+    description: str = (
+        "Send a chat message in the Minecraft game to communicate with players."
+    )
 
     def __init__(self, execution_layer):
         """
         Args:
             execution_layer: ExecutionLayer instance
         """
-        raise NotImplementedError("Phase 3: implement __init__")
+        self.execution_layer = execution_layer
 
     async def execute(self, args: dict) -> dict:
         """
         Send a chat message.
 
         Args:
-            args: {'message': str} — the message to send
+            args: {'message': str}
 
         Returns:
             {'success': bool, 'message': str}
         """
-        raise NotImplementedError("Phase 3: implement execute")
+        message = args.get('message', '')
+        if not message:
+            return {'success': False, 'error': 'No message provided'}
+        return await self.execution_layer.send_chat(message)

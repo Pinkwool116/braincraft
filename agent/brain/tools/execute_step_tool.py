@@ -30,16 +30,19 @@ class ExecuteStepTool:
         Args:
             execution_layer: ExecutionLayer instance
         """
-        raise NotImplementedError("Phase 3: implement __init__")
+        self.execution_layer = execution_layer
 
     async def execute(self, args: dict) -> dict:
         """
         Execute a step.
 
         Args:
-            args: {'step': str} — description of the step to execute
+            args: {'step_description': str} or {'step': str}
 
         Returns:
             ExecutionLayer result dict
         """
-        raise NotImplementedError("Phase 3: implement execute")
+        step = args.get('step_description') or args.get('step', '')
+        if not step:
+            return {'success': False, 'error': 'No step description provided'}
+        return await self.execution_layer.execute_step(step)

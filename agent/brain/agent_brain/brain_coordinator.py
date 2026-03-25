@@ -14,8 +14,14 @@ from .agent_loop_layer import AgentLoopLayer
 from .execution_layer import ExecutionLayer
 from .reflex_layer import ReflexLayer
 from ..tools import ToolRegistry
+from ..tools.execute_step_tool import ExecuteStepTool
+from ..tools.chat_tool import ChatTool
+from ..tools.update_task_tool import UpdateTaskTool
+from ..tools.recall_memory_tool import RecallMemoryTool
+from ..tools.interrupt_tool import InterruptTool
 from ..task_manager import TaskFileManager
 from llm.llm_wrapper import create_llm_model
+from prompts.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -121,17 +127,60 @@ class BrainCoordinator:
             ipc_server=self.ipc_server
         )
 
-        # TODO (Phase 3): Initialize LLM models from config
-        # agent_loop_llm = self._create_llm('agent_loop')
-        # coding_llm = self._create_llm('coding')
+        # Initialize LLM models from config
+        agent_loop_llm_config = config.get('agent_loop', {}).copy()
+        self._inject_api_keys(agent_loop_llm_config)
+        self.agent_loop_llm = create_llm_model(agent_loop_llm_config)
 
-        # TODO (Phase 3): Initialize layers and tools
-        # self.task_manager = TaskFileManager(config.get('agent_name', 'BrainyBot'))
-        # self.tool_registry = ToolRegistry()
-        # self.execution_layer = ExecutionLayer(...)
-        # self.reflex_layer = ReflexLayer(...)
-        # self._register_tools()
-        # self.agent_loop = AgentLoopLayer(...)
+        execution_llm_config = config.get('execution', {}).copy()
+        self._inject_api_keys(execution_llm_config)
+        self.coding_llm = create_llm_model(execution_llm_config)
+
+        # Prompt manager
+        self.prompt_manager = PromptManager()
+
+        # Task file manager
+        self.task_manager = TaskFileManager(config.get('agent_name', 'BrainyBot'))
+
+        # Tool registry
+        self.tool_registry = ToolRegistry()
+
+        # Execution layer
+        self.execution_layer = ExecutionLayer(
+            shared_state=self.shared_state,
+            ipc_server=self.ipc_server,
+            exec_coordinator=self.exec_coordinator,
+            config=config,
+            coding_llm=self.coding_llm,
+            prompt_manager=self.prompt_manager,
+            memory_manager=None,  # Phase 4: integrate MemoryRouter
+        )
+
+        # Reflex layer
+        self.reflex_layer = ReflexLayer(
+            shared_state=self.shared_state,
+            exec_coordinator=self.exec_coordinator,
+            ipc_server=self.ipc_server,
+            config=config,
+        )
+
+        # Register tools
+        self._register_tools()
+
+        # Agent loop layer
+        self.agent_loop = AgentLoopLayer(
+            shared_state=self.shared_state,
+            execution_layer=self.execution_layer,
+            tool_registry=self.tool_registry,
+            config=config,
+            llm_model=self.agent_loop_llm,
+            prompt_manager=self.prompt_manager,
+            task_manager=self.task_manager,
+            memory_manager=None,  # Phase 4: integrate MemoryRouter
+        )
+
+        # Set agent name in shared state (sync, before event loop starts)
+        self.shared_state._state['agent_name'] = config.get('agent_name', 'BrainyBot')
 
         logger.info("Brain coordinator initialized")
 
@@ -198,8 +247,7 @@ class BrainCoordinator:
             message = data.get('message', '')
             logger.info(f"Chat from {player}: {message}")
 
-            # TODO (Phase 3): Enqueue message for Agent Loop to process
-            # For now, just log it
+            self.agent_loop.enqueue_chat(player, message)
 
             return {'status': 'ok', 'response': 'Message received'}
 
@@ -250,15 +298,15 @@ class BrainCoordinator:
 
         # Register low-level reflex handlers
         async def handle_combat_engaged(data):
-            # TODO (Phase 3): Forward to ReflexLayer
+            await self.reflex_layer.handle_event('combat_engaged', data)
             return {'status': 'ok'}
 
         async def handle_low_health(data):
-            # TODO (Phase 3): Forward to ReflexLayer
+            await self.reflex_layer.handle_event('low_health', data)
             return {'status': 'ok'}
 
         async def handle_damage_taken(data):
-            # TODO (Phase 3): Forward to ReflexLayer
+            await self.reflex_layer.handle_event('damage_taken', data)
             return {'status': 'ok'}
 
         async def handle_death(data):
@@ -321,15 +369,23 @@ class BrainCoordinator:
                 logger.warning(f"Failed to load keys from {keys_file}: {e}")
                 sys.exit(1)
 
+    def _register_tools(self):
+        """Register all tools in the tool registry"""
+        self.tool_registry.register('execute_step', ExecuteStepTool(self.execution_layer))
+        self.tool_registry.register('chat', ChatTool(self.execution_layer))
+        self.tool_registry.register('update_task', UpdateTaskTool(self.task_manager))
+        self.tool_registry.register('recall_memory', RecallMemoryTool(None))  # Phase 4: MemoryRouter
+        self.tool_registry.register('interrupt_execution', InterruptTool(self.execution_layer))
+        logger.info(f"Registered {len(self.tool_registry._tools)} tools")
+
     async def start(self):
         """Start the brain system — launches Agent Loop and Reflex Layer"""
         logger.info("Starting brain system...")
 
         self.brain_tasks = []
 
-        # TODO (Phase 3): Start actual loops
-        # self.brain_tasks.append(asyncio.create_task(self._run_agent_loop()))
-        # self.brain_tasks.append(asyncio.create_task(self._run_reflex()))
+        self.brain_tasks.append(asyncio.create_task(self._run_agent_loop()))
+        self.brain_tasks.append(asyncio.create_task(self._run_reflex()))
 
         # Keep alive until shutdown
         try:
@@ -340,13 +396,21 @@ class BrainCoordinator:
 
     async def _run_agent_loop(self):
         """Run the Agent Loop Layer (main decision loop)"""
-        # TODO (Phase 3): Wait for bot_ready, then start agent_loop.run_loop()
-        raise NotImplementedError("Phase 3: implement _run_agent_loop")
+        # Wait for bot to be ready
+        logger.info("Waiting for bot to be ready before starting Agent Loop...")
+        while not await self.shared_state.get('bot_ready'):
+            await asyncio.sleep(1)
+        logger.info("Bot ready, starting Agent Loop")
+        await self.agent_loop.run_loop()
 
     async def _run_reflex(self):
         """Run the Reflex Layer (survival reflexes)"""
-        # TODO (Phase 3): Wait for bot_ready, then start reflex_layer.run()
-        raise NotImplementedError("Phase 3: implement _run_reflex")
+        # Wait for bot to be ready
+        logger.info("Waiting for bot to be ready before starting Reflex Layer...")
+        while not await self.shared_state.get('bot_ready'):
+            await asyncio.sleep(1)
+        logger.info("Bot ready, starting Reflex Layer")
+        await self.reflex_layer.run()
 
     async def cancel_all_tasks(self):
         """Cancel all running brain tasks"""
@@ -362,5 +426,7 @@ class BrainCoordinator:
     async def shutdown(self):
         """Graceful shutdown of all brain systems"""
         logger.info("Shutting down brain coordinator...")
-        # TODO (Phase 3): Save any necessary state
+        self.agent_loop.running = False
+        self.reflex_layer.stop()
+        await self.cancel_all_tasks()
         logger.info("Brain coordinator shutdown complete")
