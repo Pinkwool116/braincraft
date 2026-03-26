@@ -19,6 +19,7 @@ from ..tools.chat_tool import ChatTool
 from ..tools.update_task_tool import UpdateTaskTool
 from ..tools.recall_memory_tool import RecallMemoryTool
 from ..tools.interrupt_tool import InterruptTool
+from ..tools.wait_tool import WaitTool
 from ..task_manager import TaskFileManager
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
@@ -385,6 +386,10 @@ class BrainCoordinator:
         self.tool_registry.register('update_task', UpdateTaskTool(self.task_manager))
         self.tool_registry.register('recall_memory', RecallMemoryTool(self.memory_manager))
         self.tool_registry.register('interrupt_execution', InterruptTool(self.execution_layer))
+
+        idle_interval = self.config.get('agent_loop', {}).get('idle_interval_seconds', 30)
+        self.tool_registry.register('wait', WaitTool(default_wait_seconds=idle_interval))
+
         logger.info(f"Registered {len(self.tool_registry._tools)} tools")
 
     async def start(self):

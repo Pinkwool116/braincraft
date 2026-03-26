@@ -39,9 +39,9 @@ import Vec3 from 'vec3';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load configuration from project root (2 levels up from agent/bridge)
+// Load configuration from agent directory (1 level up from agent/bridge)
 const projectRoot = path.resolve(__dirname, '../..');
-const configPath = path.join(projectRoot, 'profiles', 'agent_brain.json');
+const configPath = path.join(projectRoot, 'agent', 'config.json');
 
 console.log('Loading config from:', configPath);
 

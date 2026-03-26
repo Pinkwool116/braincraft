@@ -32,7 +32,7 @@ async def load_config(profile_path: str = None):
         Configuration dictionary
     """
     if not profile_path:
-        profile_path = "profiles/agent_brain.json"
+        profile_path = "config.json"
 
     logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from {profile_path}")
@@ -76,14 +76,14 @@ async def main():
 
         # Validate new-style config sections
         if 'agent_loop' not in config:
-            logger.warning("Config missing 'agent_loop' section — check profiles/agent_brain.json")
+            logger.warning("Config missing 'agent_loop' section — check config.json")
         else:
             loop_model = config['agent_loop'].get('model_name', '?')
             loop_api = config['agent_loop'].get('api', '?')
             logger.info(f"Agent Loop model: {loop_model} ({loop_api})")
 
         if 'execution' not in config:
-            logger.warning("Config missing 'execution' section — check profiles/agent_brain.json")
+            logger.warning("Config missing 'execution' section — check config.json")
         else:
             exec_model = config['execution'].get('model_name', '?')
             exec_api = config['execution'].get('api', '?')

@@ -55,16 +55,13 @@ class AgentLoopLayer:
 
         # Config parameters
         loop_config = config.get('agent_loop', {})
-        self.max_consecutive_loops = loop_config.get('max_consecutive_loops', 50)
         self.idle_interval = loop_config.get('idle_interval_seconds', 30)
 
         # State
         self.running = False
         self.chat_queue = asyncio.Queue()
         self.last_tool_result = None
-        self.consecutive_loops = 0
         self.last_tool_calls: List[dict] = []  # Recent calls for dead loop detection
-        self._is_first_run = True
 
         # Prompt Logger
         agent_name = config.get('agent_name', 'BrainyBot')
@@ -95,29 +92,6 @@ class AgentLoopLayer:
 
         while self.running:
             try:
-                # Dead loop protection: max consecutive loops
-                if self.consecutive_loops >= self.max_consecutive_loops:
-                    logger.warning(
-                        f"Max consecutive loops ({self.max_consecutive_loops}) reached. "
-                        f"Pausing for {self.idle_interval}s."
-                    )
-                    await asyncio.sleep(self.idle_interval)
-                    self.consecutive_loops = 0
-
-                # Check if there's anything to do
-                has_chat = not self.chat_queue.empty()
-                has_task = bool(self.task_manager.read_task().strip())
-                has_pending_result = self.last_tool_result is not None
-
-                # If idle (no chat, no task, no pending result), sleep
-                if not has_chat and not has_task and not has_pending_result and not self._is_first_run:
-                    await asyncio.sleep(self.idle_interval)
-                    # We do NOT `continue` here, because we want the agent to 
-                    # wake up every N seconds and potentially decide to do something
-                    # even if there's no explicit task or chat.
-
-                self._is_first_run = False
-
                 # Build prompt
                 prompt = await self.build_prompt()
 
@@ -170,8 +144,6 @@ class AgentLoopLayer:
 
                 # Memory maintenance: crystallize if task was just cleared
                 await self._maybe_crystallize(tool_call, result)
-
-                self.consecutive_loops += 1
 
             except asyncio.CancelledError:
                 logger.info("Agent Loop cancelled")
@@ -367,6 +339,14 @@ class AgentLoopLayer:
             self.memory_manager.log(
                 entry_type='reasoning',
                 content=f"更新任务文件 (action={action}): {content_preview}",
+                metadata=metadata,
+            )
+
+        elif tool_name == 'wait':
+            seconds = tool_args.get('seconds', 10)
+            self.memory_manager.log(
+                entry_type='reasoning',
+                content=f"主动等待 {seconds} 秒",
                 metadata=metadata,
             )
 
