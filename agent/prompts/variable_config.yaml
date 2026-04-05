@@ -80,6 +80,7 @@ CHAT_CONTEXT: get_chat_context
 # Todolist & Task (Agent Loop):
 #   $TASK_FILE -> context['TASK_FILE']         (coding scratchpad for execution layer)
 #   $TODOLIST_FILE -> context['TODOLIST_FILE'] (planning memo for agent loop)
+#   $CHAT_HISTORY -> context['CHAT_HISTORY']   (recent player chat log from chat_log.md)
 #
 # Interruption Prompt:
 #   $CURRENT_ACTION -> context['CURRENT_ACTION']

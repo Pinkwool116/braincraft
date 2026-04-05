@@ -30,7 +30,8 @@ class AgentLoopLayer:
     """
 
     def __init__(self, shared_state, execution_layer, tool_registry, config, llm_model,
-                 prompt_manager, task_manager, memory_manager=None, todolist_manager=None):
+                 prompt_manager, task_manager, memory_manager=None, todolist_manager=None,
+                 chat_log_manager=None):
         """
         Initialize the Agent Loop Layer.
 
@@ -44,6 +45,7 @@ class AgentLoopLayer:
             task_manager: TaskFileManager for task.md access
             memory_manager: MemoryRouter instance (None in Phase 3)
             todolist_manager: TodoListManager for todolist.md access
+            chat_log_manager: ChatLogManager for persisting received player messages
         """
         self.shared_state = shared_state
         self.execution_layer = execution_layer
@@ -54,6 +56,7 @@ class AgentLoopLayer:
         self.task_manager = task_manager
         self.memory_manager = memory_manager
         self.todolist_manager = todolist_manager
+        self.chat_log_manager = chat_log_manager
 
         # Config parameters
         loop_config = config.get('agent_loop', {})
@@ -214,6 +217,9 @@ class AgentLoopLayer:
         # Read todolist file
         todolist_content = self.todolist_manager.read() if self.todolist_manager else ''
 
+        # Read recent chat history
+        chat_history = self.chat_log_manager.get_recent() if self.chat_log_manager else ''
+
         # Build context for prompt rendering
         context = {
             'state': state,
@@ -223,6 +229,7 @@ class AgentLoopLayer:
             'TASK_FILE': task_content if task_content else "(编码草稿板为空)",
             'TODOLIST_FILE': todolist_content if todolist_content else "(待办清单为空)",
             'PENDING_CHAT': pending_chat if pending_chat else "(无新消息)",
+            'CHAT_HISTORY': chat_history if chat_history else "(无聊天记录)",
             'TOOL_DESCRIPTIONS': self.tool_registry.get_tool_descriptions(),
             'LAST_TOOL_RESULT': last_result_str,
             'SOUL': self._soul_content,
@@ -572,7 +579,7 @@ class AgentLoopLayer:
     # ========== Internal Helpers ==========
 
     def _drain_chat_queue(self) -> str:
-        """Drain all pending chat messages and format them."""
+        """Drain all pending chat messages, persist them to chat log, and format for prompt."""
         messages = []
         while not self.chat_queue.empty():
             try:
@@ -580,6 +587,9 @@ class AgentLoopLayer:
                 player = msg.get('player', 'Unknown')
                 content = msg.get('message', '')
                 messages.append(f"[{player}]: {content}")
+                # Persist to chat log
+                if self.chat_log_manager:
+                    self.chat_log_manager.append(player, content)
             except asyncio.QueueEmpty:
                 break
 

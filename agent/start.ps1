@@ -22,6 +22,7 @@ Start-Sleep -Seconds 5
 # 2. 启动 Java/Node.js 端
 Write-Host "[2/2] 正在启动 JavaScript/Java 端 (Node Bridge) ..." -ForegroundColor Green
 $nodeCmd = "cd '$RootPath'; node agent/bridge/minecraft_bridge.js"
+Start-Process powershell -ArgumentList "-NoExit -Command `"$nodeCmd`""
 
 Write-Host ""
 Write-Host "启动动作已完成！请查看弹出的两个窗口以确认服务运行状态。" -ForegroundColor Cyan

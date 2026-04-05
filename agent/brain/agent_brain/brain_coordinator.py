@@ -21,7 +21,7 @@ from ..tools.recall_memory_tool import RecallMemoryTool
 from ..tools.interrupt_tool import InterruptTool
 from ..tools.wait_tool import WaitTool
 from ..tools.todolist_tool import TodolistTool
-from ..task_manager import TaskFileManager, TodoListManager
+from ..task_manager import TaskFileManager, TodoListManager, ChatLogManager
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
 from data_manager.memory_graph import MemoryRouter
@@ -148,6 +148,9 @@ class BrainCoordinator:
         # Todolist manager
         self.todolist_manager = TodoListManager(config.get('agent_name', 'BrainyBot'))
 
+        # Chat log manager
+        self.chat_log_manager = ChatLogManager(config.get('agent_name', 'BrainyBot'))
+
         # Memory router (working memory + long-term memory graph)
         enable_logging = config.get('enable_prompt_logging', True)
         embedding_config = config.get('embedding', None)
@@ -193,6 +196,7 @@ class BrainCoordinator:
             task_manager=self.task_manager,
             memory_manager=self.memory_manager,  # MemoryRouter integrated
             todolist_manager=self.todolist_manager,
+            chat_log_manager=self.chat_log_manager,
         )
 
         # Set agent name in shared state (sync, before event loop starts)
