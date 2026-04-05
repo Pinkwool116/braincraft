@@ -20,7 +20,8 @@ from ..tools.update_task_tool import UpdateTaskTool
 from ..tools.recall_memory_tool import RecallMemoryTool
 from ..tools.interrupt_tool import InterruptTool
 from ..tools.wait_tool import WaitTool
-from ..task_manager import TaskFileManager
+from ..tools.todolist_tool import TodolistTool
+from ..task_manager import TaskFileManager, TodoListManager
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
 from data_manager.memory_graph import MemoryRouter
@@ -144,6 +145,9 @@ class BrainCoordinator:
         # Task file manager
         self.task_manager = TaskFileManager(config.get('agent_name', 'BrainyBot'))
 
+        # Todolist manager
+        self.todolist_manager = TodoListManager(config.get('agent_name', 'BrainyBot'))
+
         # Memory router (working memory + long-term memory graph)
         enable_logging = config.get('enable_prompt_logging', True)
         embedding_config = config.get('embedding', None)
@@ -166,6 +170,7 @@ class BrainCoordinator:
             coding_llm=self.coding_llm,
             prompt_manager=self.prompt_manager,
             memory_manager=self.memory_manager,  # MemoryRouter integrated
+            task_manager=self.task_manager,  # For injecting task.md into coding prompt
         )
         self.reflex_layer = ReflexLayer(
             shared_state=self.shared_state,
@@ -187,6 +192,7 @@ class BrainCoordinator:
             prompt_manager=self.prompt_manager,
             task_manager=self.task_manager,
             memory_manager=self.memory_manager,  # MemoryRouter integrated
+            todolist_manager=self.todolist_manager,
         )
 
         # Set agent name in shared state (sync, before event loop starts)
@@ -386,6 +392,8 @@ class BrainCoordinator:
         self.tool_registry.register('update_task', UpdateTaskTool(self.task_manager))
         self.tool_registry.register('recall_memory', RecallMemoryTool(self.memory_manager))
         self.tool_registry.register('interrupt_execution', InterruptTool(self.execution_layer))
+
+        self.tool_registry.register('todolist', TodolistTool(self.todolist_manager))
 
         idle_interval = self.config.get('agent_loop', {}).get('idle_interval_seconds', 30)
         self.tool_registry.register('wait', WaitTool(default_wait_seconds=idle_interval))

@@ -9,6 +9,8 @@
 #
 # Special variables that are provided directly from context (not functions):
 # - TASK: Task description (provided by caller)
+# - TASK_FILE: task.md content — coding scratchpad (provided by caller)
+# - TODOLIST_FILE: todolist.md content — planning memo (provided by caller)
 # - GOAL: Goal description (provided by caller)
 # - PLAYER: Player name (provided by caller)
 # - MESSAGE: Chat message (provided by caller)
@@ -16,6 +18,8 @@
 # - RETRY_COUNT: Retry count (provided by caller)
 # - CODE_RULES: Code generation rules (provided by caller)
 # - CODE_DOCS: API documentation (provided by caller)
+# - CURRENT_ACTION: Current action description (for interruption prompt)
+# - PENDING_MESSAGES: Pending chat messages (for interruption prompt)
 
 # ========== Basic Game State ==========
 STATS: get_stats
@@ -72,6 +76,14 @@ CHAT_CONTEXT: get_chat_context
 #
 # Code Generation:
 #   $EXECUTION_CONTEXT -> context['execution_context']
+#
+# Todolist & Task (Agent Loop):
+#   $TASK_FILE -> context['TASK_FILE']         (coding scratchpad for execution layer)
+#   $TODOLIST_FILE -> context['TODOLIST_FILE'] (planning memo for agent loop)
+#
+# Interruption Prompt:
+#   $CURRENT_ACTION -> context['CURRENT_ACTION']
+#   $PENDING_MESSAGES -> context['PENDING_MESSAGES']
 #
 # Note: PromptManager resolution priority:
 #   1. Direct context values (context['key'])

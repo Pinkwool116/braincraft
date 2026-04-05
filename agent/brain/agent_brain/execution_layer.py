@@ -35,7 +35,7 @@ class ExecutionLayer:
     is_executing: bool = False
 
     def __init__(self, shared_state, ipc_server, exec_coordinator, config,
-                 coding_llm, prompt_manager, memory_manager=None):
+                 coding_llm, prompt_manager, memory_manager=None, task_manager=None):
         """
         Initialize the Execution Layer.
 
@@ -47,6 +47,7 @@ class ExecutionLayer:
             coding_llm: LLM model for code generation
             prompt_manager: PromptManager for building coding prompts
             memory_manager: MemoryRouter instance (None in Phase 3)
+            task_manager: TaskFileManager for reading task.md into coding context
         """
         self.shared_state = shared_state
         self.ipc_server = ipc_server
@@ -55,6 +56,7 @@ class ExecutionLayer:
         self.coding_llm = coding_llm
         self.prompt_manager = prompt_manager
         self.memory_manager = memory_manager
+        self.task_manager = task_manager
         self.is_executing = False
 
         # Prompt Logger
@@ -307,6 +309,9 @@ class ExecutionLayer:
         # Build execution context (memory-enriched)
         execution_context = await self._build_execution_context(step_description)
 
+        # Read task.md for decision-layer notes
+        task_file_content = self.task_manager.read_task() if self.task_manager else ''
+
         # Context for prompt variable resolution
         context = {
             'state': state,
@@ -314,6 +319,7 @@ class ExecutionLayer:
             'memory_manager': self.memory_manager,
             # Direct values (Special Direct Values per variable_config.yaml)
             'TASK': step_description,
+            'TASK_FILE': task_file_content if task_file_content else '(无决策层笔记)',
             'EXECUTION_CONTEXT': execution_context,
             'EXAMPLES': '',  # TODO: Load code examples from file
         }

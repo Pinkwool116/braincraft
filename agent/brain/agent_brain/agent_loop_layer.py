@@ -30,7 +30,7 @@ class AgentLoopLayer:
     """
 
     def __init__(self, shared_state, execution_layer, tool_registry, config, llm_model,
-                 prompt_manager, task_manager, memory_manager=None):
+                 prompt_manager, task_manager, memory_manager=None, todolist_manager=None):
         """
         Initialize the Agent Loop Layer.
 
@@ -43,6 +43,7 @@ class AgentLoopLayer:
             prompt_manager: PromptManager for building prompts
             task_manager: TaskFileManager for task.md access
             memory_manager: MemoryRouter instance (None in Phase 3)
+            todolist_manager: TodoListManager for todolist.md access
         """
         self.shared_state = shared_state
         self.execution_layer = execution_layer
@@ -52,6 +53,7 @@ class AgentLoopLayer:
         self.prompt_manager = prompt_manager
         self.task_manager = task_manager
         self.memory_manager = memory_manager
+        self.todolist_manager = todolist_manager
 
         # Config parameters
         loop_config = config.get('agent_loop', {})
@@ -62,6 +64,10 @@ class AgentLoopLayer:
         self.chat_queue = asyncio.Queue()
         self.last_tool_result = None
         self.last_tool_calls: List[dict] = []  # Recent calls for dead loop detection
+
+        # Interrupt watch: wake_event is set when new chat arrives during tool execution
+        self.wake_event = asyncio.Event()
+        self.INTERRUPTIBLE_TOOLS = {'execute_step', 'wait'}
 
         # Prompt Logger
         agent_name = config.get('agent_name', 'BrainyBot')
@@ -133,8 +139,12 @@ class AgentLoopLayer:
                     f"thinking={thinking[:80]}..."
                 )
 
-                # Execute tool
-                result = await self.execute_tool(tool_call)
+                # Execute tool (with interrupt watch for long-running tools)
+                tool_name = tool_call.get('tool')
+                if tool_name in self.INTERRUPTIBLE_TOOLS:
+                    result = await self._execute_with_interrupt_watch(tool_call)
+                else:
+                    result = await self.execute_tool(tool_call)
 
                 # Update context
                 self.update_context(tool_call, result)
@@ -201,13 +211,17 @@ class AgentLoopLayer:
                     soul_content = ""
             self._soul_content = soul_content
 
+        # Read todolist file
+        todolist_content = self.todolist_manager.read() if self.todolist_manager else ''
+
         # Build context for prompt rendering
         context = {
             'state': state,
             'agent_name': state.get('agent_name', 'BrainyBot'),
             'memory_manager': self.memory_manager,
             # Direct values for agent_loop/system.md
-            'TASK_FILE': task_content if task_content else "(任务为空——你可以自由决定做什么)",
+            'TASK_FILE': task_content if task_content else "(编码草稿板为空)",
+            'TODOLIST_FILE': todolist_content if todolist_content else "(待办清单为空)",
             'PENDING_CHAT': pending_chat if pending_chat else "(无新消息)",
             'TOOL_DESCRIPTIONS': self.tool_registry.get_tool_descriptions(),
             'LAST_TOOL_RESULT': last_result_str,
@@ -350,6 +364,15 @@ class AgentLoopLayer:
                 metadata=metadata,
             )
 
+        elif tool_name == 'todolist':
+            action = tool_args.get('action', 'read')
+            content_preview = str(tool_args.get('content', ''))[:100]
+            self.memory_manager.log(
+                entry_type='reasoning',
+                content=f"管理待办清单 (action={action}): {content_preview}",
+                metadata=metadata,
+            )
+
         elif tool_name == 'interrupt_execution':
             self.memory_manager.log(
                 entry_type='action',
@@ -366,11 +389,174 @@ class AgentLoopLayer:
                 metadata=metadata,
             )
 
+    # ========== Interrupt Watch ==========
+
+    async def _execute_with_interrupt_watch(self, tool_call: dict) -> dict:
+        """
+        Execute a long-running tool while monitoring wake_event for incoming messages.
+
+        When a chat message arrives during execution, calls a lightweight LLM
+        to decide whether to interrupt (stop current action) or just chat
+        (reply without stopping).
+
+        Args:
+            tool_call: The tool call dict to execute
+
+        Returns:
+            Tool execution result dict
+        """
+        self.wake_event.clear()
+        tool_task = asyncio.create_task(self.execute_tool(tool_call))
+
+        while not tool_task.done():
+            wake_task = asyncio.create_task(self.wake_event.wait())
+
+            done, _ = await asyncio.wait(
+                [tool_task, wake_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if tool_task in done:
+                wake_task.cancel()
+                return tool_task.result()
+
+            # Woken up by incoming message
+            self.wake_event.clear()
+            pending_chat = self._drain_chat_queue()
+            if not pending_chat:
+                continue  # Spurious wake (message already consumed elsewhere)
+
+            logger.info(f"Interrupt watch: evaluating incoming chat during {tool_call.get('tool')}")
+            decision = await self._evaluate_interruption(tool_call, pending_chat)
+
+            if decision.get('action') == 'interrupt':
+                # Interrupt current tool execution
+                result = await self._interrupt_current_tool(tool_task)
+                # Send reply message
+                if decision.get('chat_message'):
+                    await self.execution_layer.send_chat(decision['chat_message'])
+                return result
+
+            elif decision.get('action') == 'chat':
+                # Reply without interrupting — continue waiting for tool_task
+                if decision.get('chat_message'):
+                    await self.execution_layer.send_chat(decision['chat_message'])
+
+        return tool_task.result()
+
+    async def _evaluate_interruption(self, current_tool_call: dict, pending_chat: str) -> dict:
+        """
+        Lightweight LLM call to decide whether to interrupt the current action.
+
+        Args:
+            current_tool_call: The currently executing tool call
+            pending_chat: Formatted pending chat messages
+
+        Returns:
+            {'action': 'interrupt'|'chat', 'chat_message': str}
+        """
+        current_action = current_tool_call.get('thinking', '')
+        tool_name = current_tool_call.get('tool')
+        if tool_name == 'execute_step':
+            step_desc = current_tool_call.get('tool_args', {}).get('step_description', '')
+            current_action += f" (正在执行: {step_desc})"
+        elif tool_name == 'wait':
+            seconds = current_tool_call.get('tool_args', {}).get('seconds', '')
+            current_action += f" (正在等待 {seconds} 秒)"
+
+        # Load soul if not cached yet
+        if not hasattr(self, '_soul_content') or not self._soul_content:
+            self._soul_content = ''
+
+        context = {
+            'CURRENT_ACTION': current_action,
+            'PENDING_MESSAGES': pending_chat,
+            'SOUL': self._soul_content,
+            'agent_name': self.config.get('agent_name', 'BrainyBot'),
+        }
+
+        try:
+            prompt = await self.prompt_manager.render(
+                'agent_loop/interruption.md', context=context, strict=False
+            )
+
+            messages = [{"role": "user", "content": prompt}]
+            response = await self.llm.send_request(messages)
+
+            return self._parse_interruption_response(response)
+        except Exception as e:
+            logger.error(f"Interruption evaluation failed: {e}", exc_info=True)
+            # Default: don't interrupt on error
+            return {'action': 'chat', 'chat_message': ''}
+
+    def _parse_interruption_response(self, response: str) -> dict:
+        """
+        Parse the interruption LLM's JSON response.
+
+        Expected format: {"action": "interrupt"|"chat", "chat_message": "..."}
+
+        Args:
+            response: Raw LLM response string
+
+        Returns:
+            Parsed decision dict
+        """
+        import re
+
+        if not response:
+            return {'action': 'chat', 'chat_message': ''}
+
+        try:
+            text = response.strip()
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                action = parsed.get('action', 'chat')
+                if action not in ('interrupt', 'chat'):
+                    action = 'chat'
+                return {
+                    'action': action,
+                    'chat_message': parsed.get('chat_message', '')
+                }
+        except Exception as e:
+            logger.warning(f"Failed to parse interruption response: {e}")
+
+        return {'action': 'chat', 'chat_message': ''}
+
+    async def _interrupt_current_tool(self, tool_task: asyncio.Task) -> dict:
+        """
+        Interrupt the currently running tool execution.
+
+        For execute_step: triggers the JS interrupt mechanism first.
+        For all tools: cancels the asyncio task.
+
+        Args:
+            tool_task: The asyncio task running the tool
+
+        Returns:
+            Tool result dict (possibly with interrupted error)
+        """
+        logger.info("Interrupting current tool execution")
+
+        # If JS code is executing, trigger the interrupt mechanism
+        if self.execution_layer.is_executing:
+            await self.execution_layer.interrupt()
+
+        # Cancel the asyncio task
+        tool_task.cancel()
+        try:
+            return await tool_task
+        except asyncio.CancelledError:
+            return {'success': False, 'error': 'Interrupted by player message'}
+
+    # ========== Chat Queue ==========
+
     def enqueue_chat(self, player: str, message: str):
         """
         Enqueue a chat message for processing in the next loop iteration.
 
         Called by brain_coordinator when a chat message arrives from JS.
+        Also signals wake_event to interrupt long-running tools.
 
         Args:
             player: Player name
@@ -378,6 +564,7 @@ class AgentLoopLayer:
         """
         try:
             self.chat_queue.put_nowait({'player': player, 'message': message})
+            self.wake_event.set()  # Wake up interrupt watch if active
             logger.info(f"Chat enqueued from {player}: {message[:50]}")
         except asyncio.QueueFull:
             logger.warning(f"Chat queue full, dropping message from {player}")
