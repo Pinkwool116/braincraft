@@ -38,7 +38,8 @@ async def load_config(profile_path: str = None):
         Configuration dictionary
     """
     if not profile_path:
-        profile_path = "agent/config.json"
+        # Use config.json relative to this script
+        profile_path = str(Path(__file__).resolve().parent / "config.json")
 
     logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from {profile_path}")
@@ -53,6 +54,7 @@ async def load_config(profile_path: str = None):
         # 设置正确的 bots 文件夹基路径
         project_root = Path(__file__).resolve().parent.parent
         config['bots_dir'] = str(project_root / 'bots')
+        return config
     except FileNotFoundError:
         logger.error(f"Configuration file not found: {profile_path}")
         sys.exit(1)
