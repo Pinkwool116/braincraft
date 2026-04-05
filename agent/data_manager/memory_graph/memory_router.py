@@ -41,12 +41,17 @@ class MemoryRouter:
         # 语义向量化
         self.embedding = EmbeddingProvider(agent_name, embedding_config)
         
-        # 短期记忆：工作记忆缓冲区
+        # 工作记忆缓冲区
         self.working_memory = WorkingMemoryBuffer(agent_name)
-        
+
+        # 动态获取 bots_dir
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        bots_dir = os.path.join(str(project_root), "bots")
+
         # 日志
-        self.prompt_logger = PromptLogger("bots", agent_name, enabled=enable_logging)
-        
+        self.prompt_logger = PromptLogger(bots_dir, agent_name, enabled=enable_logging)
+
         # 预加载反思提示词模板
         prompt_path = os.path.join(
             os.path.dirname(__file__), "..", "..", "prompts", "memory", "memory_graph_extraction.md"

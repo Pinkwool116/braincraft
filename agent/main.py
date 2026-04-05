@@ -17,6 +17,12 @@ if sys.platform == 'win32':
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
+import os
+# Force working directory to the 'braincraft' project root, 
+# so relative paths like "bots", "keys.json", and "profiles" work everywhere.
+project_root = Path(__file__).resolve().parent.parent
+os.chdir(project_root)
+
 from brain.agent_brain.brain_coordinator import BrainCoordinator
 from bridge.ipc_server import IPCServer
 from utils.logger import setup_logger
@@ -32,7 +38,7 @@ async def load_config(profile_path: str = None):
         Configuration dictionary
     """
     if not profile_path:
-        profile_path = "config.json"
+        profile_path = "agent/config.json"
 
     logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from {profile_path}")
@@ -41,13 +47,12 @@ async def load_config(profile_path: str = None):
         with open(profile_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
 
-        # Add keys file path
         if 'keys_file' not in config:
             config['keys_file'] = 'keys.json'
-
-        logger.info("Configuration loaded successfully")
-        return config
-
+            
+        # 设置正确的 bots 文件夹基路径
+        project_root = Path(__file__).resolve().parent.parent
+        config['bots_dir'] = str(project_root / 'bots')
     except FileNotFoundError:
         logger.error(f"Configuration file not found: {profile_path}")
         sys.exit(1)
@@ -145,3 +150,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+

@@ -34,7 +34,9 @@ class TaskFileManager:
             agent_name: Agent name (used for file path: bots/{name}/task.md)
         """
         self.agent_name = agent_name
-        self.task_dir = os.path.join('bots', agent_name)
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        self.task_dir = os.path.join(str(project_root), 'bots', agent_name)
         self.task_file = os.path.join(self.task_dir, 'task.md')
         logger.info(f"TaskFileManager initialized: {self.task_file}")
 

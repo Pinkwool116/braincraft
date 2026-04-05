@@ -47,7 +47,9 @@ class EmbeddingProvider:
         self._cache: Dict[str, List[float]] = {}  # node_id -> vector
         self._text_cache: Dict[str, str] = {}  # node_id -> content (用于检测内容变化)
 
-        self._cache_path = os.path.join("bots", agent_name, "memory_graph", "embeddings.json")
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        self._cache_path = os.path.join(str(project_root), "bots", agent_name, "memory_graph", "embeddings.json")
         self._client: Optional[AsyncOpenAI] = None
         self._model: str = ""
         self._enabled = False

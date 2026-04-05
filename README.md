@@ -174,17 +174,26 @@ const settings = {
 
 本系统采取**双进程核心分离结构**，包含 Python 大脑模型通信以及 Node.js 的 Mineflayer 环境。启动时**先启动 Python 脑，再挂载 Node.js 游戏身体**以免丢失通信连接。
 
-#### a. 启动世界
-在 Minecraft 客户端开启游戏世界并「对局域网开放」，在 `settings.js` 内配置好暴露的局域网端口号。
-
-#### b. 启动 Python 主控脑 (终端 1)
-```bash
-conda activate braincraft
-# 默认会根据 main.py 内自动选择 profiles 下的配置
-python agent\main.py
+#### 一键启动
+运行位于 `agent` 目录下的 `start.ps1` 脚本，自动激活环境并弹窗启动所需的双端进程：
+```powershell
+cd agent
+.\start.ps1
 ```
 
-#### c. 启动 Node 连接桥 (终端 2)
+#### 手动分步启动
+
+**a. 启动世界**
+在 Minecraft 客户端开启游戏世界并「对局域网开放」，在 `settings.js` 内配置好暴露的局域网端口号。
+
+**b. 启动 Python 主控脑 (终端 1)**
+```bash
+conda activate braincraft_env
+# 默认会根据 main.py 内自动选择 profiles 下的配置
+python agent/main.py
+```
+
+**c. 启动 Node 连接桥 (终端 2)**
 ```bash
 # 激活桥接器
 node agent\bridge\minecraft_bridge.js

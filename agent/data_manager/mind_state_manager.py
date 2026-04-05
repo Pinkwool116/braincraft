@@ -31,7 +31,9 @@ class MindStateManager:
             agent_name: Name of the agent (for file paths)
         """
         self.agent_name = agent_name
-        self.base_dir = os.path.join("bots", agent_name)
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent
+        self.base_dir = os.path.join(str(project_root), "bots", agent_name)
 
         # Create directory if needed
         os.makedirs(self.base_dir, exist_ok=True)

@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 class GraphStore:
     def __init__(self, agent_name: str):
         self.agent_name = agent_name
-        self.base_dir = os.path.join("bots", agent_name, "memory_graph")
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        self.base_dir = os.path.join(str(project_root), "bots", agent_name, "memory_graph")
         self.nodes_dir = os.path.join(self.base_dir, "nodes")
         self.edges_dir = os.path.join(self.base_dir, "edges")
         

@@ -3,7 +3,6 @@
     "ipc_port": 9000,
     "keys_file": "keys.json",
     "enable_prompt_logging": true,
-
     "agent_loop": {
         "model_name": "qwen-max",
         "api": "qwen",
@@ -16,7 +15,6 @@
         "max_consecutive_loops": 50,
         "idle_interval_seconds": 30
     },
-
     "execution": {
         "model_name": "qwen-max",
         "api": "qwen",
@@ -28,7 +26,6 @@
         },
         "timeout": 120
     },
-
     "reflex": {
         "interval_seconds": 0.1,
         "modes": {
@@ -41,44 +38,56 @@
             "idle_staring": true
         }
     },
-
     "memory": {
         "consolidate_interval": 5,
         "enable_crystallize": true
     },
-
     "embedding": {
         "api": "qwen",
         "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "text-embedding-v3"
     },
-
     "_alternative_models": {
         "openai_loop": {
             "model_name": "gpt-4o",
             "api": "openai",
-            "params": { "temperature": 0.7, "max_tokens": 4000 }
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 4000
+            }
         },
         "openai_execution": {
             "model_name": "gpt-4o-mini",
             "api": "openai",
-            "params": { "temperature": 0.3, "max_tokens": 4000 }
+            "params": {
+                "temperature": 0.3,
+                "max_tokens": 4000
+            }
         },
         "claude": {
             "model_name": "claude-3-5-sonnet-20241022",
             "api": "anthropic",
-            "params": { "temperature": 0.7, "max_tokens": 4000 }
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 4000
+            }
         },
         "deepseek": {
             "model_name": "deepseek-chat",
             "api": "deepseek",
-            "params": { "temperature": 0.7, "max_tokens": 4000 }
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 4000
+            }
         },
         "local_ollama": {
             "model_name": "llama3.1:8b",
             "api": "ollama",
             "base_url": "http://localhost:11434",
-            "params": { "temperature": 0.7, "num_ctx": 8192 }
+            "params": {
+                "temperature": 0.7,
+                "num_ctx": 8192
+            }
         }
     }
 }

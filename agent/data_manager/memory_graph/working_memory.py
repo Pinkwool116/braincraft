@@ -33,9 +33,12 @@ class WorkingMemoryBuffer:
     def __init__(self, agent_name: str, consolidate_interval: int = 5):
         self.agent_name = agent_name
         # 原始条目和压缩摘要分开存储
-        self._raw_path = os.path.join("bots", agent_name, "working_memory_raw.json")
-        self._summary_path = os.path.join("bots", agent_name, "working_memory_summary.md")
-        
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        base_dir = os.path.join(str(project_root), "bots", agent_name)
+        self._raw_path = os.path.join(base_dir, "working_memory_raw.json")
+        self._summary_path = os.path.join(base_dir, "working_memory_summary.md")
+
         self.context: Dict[str, Any] = {}
         self.timeline: List[Dict[str, Any]] = []  # 仅原始条目
         self.consolidated_summary: str = ""  # 滚动压缩的完整摘要（独立存储）
