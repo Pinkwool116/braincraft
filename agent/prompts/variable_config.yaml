@@ -9,8 +9,9 @@
 #
 # Special variables that are provided directly from context (not functions):
 # - TASK: Task description (provided by caller)
-# - TASK_FILE: task.md content — coding scratchpad (provided by caller)
-# - TODOLIST_FILE: todolist.md content — planning memo (provided by caller)
+# - DRAFT_FILE: draft.md content — current-step technical thinking (provided by caller)
+# - TODOLIST_FILE: todolist.md content — current short-term todos (provided by caller)
+# - PLAN_FILE: plan.md content — long-term strategic plan (provided by caller)
 # - GOAL: Goal description (provided by caller)
 # - PLAYER: Player name (provided by caller)
 # - MESSAGE: Chat message (provided by caller)
@@ -77,10 +78,11 @@ CHAT_CONTEXT: get_chat_context
 # Code Generation:
 #   $EXECUTION_CONTEXT -> context['execution_context']
 #
-# Todolist & Task (Agent Loop):
-#   $TASK_FILE -> context['TASK_FILE']         (coding scratchpad for execution layer)
-#   $TODOLIST_FILE -> context['TODOLIST_FILE'] (planning memo for agent loop)
-#   $CHAT_HISTORY -> context['CHAT_HISTORY']   (recent player chat log from chat_log.md)
+# Todolist, Plan & Draft (Agent Loop):
+#   $TODOLIST_FILE -> context['TODOLIST_FILE']    (current short-term todos for agent loop)
+#   $PLAN_FILE -> context['PLAN_FILE']            (long-term strategic plan for agent loop)
+#   $DRAFT_FILE -> context['DRAFT_FILE']          (current-step technical thinking for coding LLM)
+#   $CHAT_HISTORY -> context['CHAT_HISTORY']      (recent player chat log from chat_log.md)
 #
 # Interruption Prompt:
 #   $CURRENT_ACTION -> context['CURRENT_ACTION']

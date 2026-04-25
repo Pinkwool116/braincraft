@@ -16,12 +16,13 @@ from .reflex_layer import ReflexLayer
 from ..tools import ToolRegistry
 from ..tools.execute_step_tool import ExecuteStepTool
 from ..tools.chat_tool import ChatTool
-from ..tools.update_task_tool import UpdateTaskTool
 from ..tools.recall_memory_tool import RecallMemoryTool
 from ..tools.interrupt_tool import InterruptTool
 from ..tools.wait_tool import WaitTool
-from ..tools.todolist_tool import TodolistTool
-from ..task_manager import TaskFileManager, TodoListManager, ChatLogManager
+from ..tools.plan_tool import PlanTool
+from ..tools.draft_tool import DraftTool
+from ..tools.todolist_tool_v2 import TodolistToolV2
+from ..task_manager import ChatLogManager, PlanManager, DraftManager, TodoListStore
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
 from data_manager.memory_graph import MemoryRouter
@@ -110,7 +111,8 @@ class BrainCoordinator:
     - ExecutionLayer: Code generation and execution
     - ReflexLayer: Survival reflexes and automatic behaviors
     - ToolRegistry: Available tools for the Agent Loop
-    - TaskFileManager: File-based task tracking
+    - TodoListStore: Structured Markdown-based todolist
+    - PlanManager / DraftManager: Strategic plan and current-step thinking
     """
 
     def __init__(self, ipc_server, config):
@@ -142,11 +144,14 @@ class BrainCoordinator:
         # Prompt manager
         self.prompt_manager = PromptManager()
 
-        # Task file manager
-        self.task_manager = TaskFileManager(config.get('agent_name', 'BrainyBot'))
+        # Todolist store (structured Markdown with ID-based operations)
+        self.todolist_store = TodoListStore(config.get('agent_name', 'BrainyBot'))
 
-        # Todolist manager
-        self.todolist_manager = TodoListManager(config.get('agent_name', 'BrainyBot'))
+        # Plan manager (long-term strategic plan)
+        self.plan_manager = PlanManager(config.get('agent_name', 'BrainyBot'))
+
+        # Draft manager (current-step technical thinking — replaces task.md)
+        self.draft_manager = DraftManager(config.get('agent_name', 'BrainyBot'))
 
         # Chat log manager
         self.chat_log_manager = ChatLogManager(config.get('agent_name', 'BrainyBot'))
@@ -173,7 +178,8 @@ class BrainCoordinator:
             coding_llm=self.coding_llm,
             prompt_manager=self.prompt_manager,
             memory_manager=self.memory_manager,  # MemoryRouter integrated
-            task_manager=self.task_manager,  # For injecting task.md into coding prompt
+            draft_manager=self.draft_manager,
+            chat_log_manager=self.chat_log_manager,
         )
         self.reflex_layer = ReflexLayer(
             shared_state=self.shared_state,
@@ -193,9 +199,10 @@ class BrainCoordinator:
             config=config,
             llm_model=self.agent_loop_llm,
             prompt_manager=self.prompt_manager,
-            task_manager=self.task_manager,
             memory_manager=self.memory_manager,  # MemoryRouter integrated
-            todolist_manager=self.todolist_manager,
+            todolist_store=self.todolist_store,
+            plan_manager=self.plan_manager,
+            draft_manager=self.draft_manager,
             chat_log_manager=self.chat_log_manager,
         )
 
@@ -393,11 +400,14 @@ class BrainCoordinator:
         """Register all tools in the tool registry"""
         self.tool_registry.register('execute_step', ExecuteStepTool(self.execution_layer))
         self.tool_registry.register('chat', ChatTool(self.execution_layer))
-        self.tool_registry.register('update_task', UpdateTaskTool(self.task_manager))
         self.tool_registry.register('recall_memory', RecallMemoryTool(self.memory_manager))
         self.tool_registry.register('interrupt_execution', InterruptTool(self.execution_layer))
 
-        self.tool_registry.register('todolist', TodolistTool(self.todolist_manager))
+        self.tool_registry.register('todolist', TodolistToolV2(self.todolist_store))
+
+        self.tool_registry.register('plan', PlanTool(self.plan_manager))
+
+        self.tool_registry.register('draft', DraftTool(self.draft_manager))
 
         idle_interval = self.config.get('agent_loop', {}).get('idle_interval_seconds', 30)
         self.tool_registry.register('wait', WaitTool(default_wait_seconds=idle_interval))

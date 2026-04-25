@@ -267,7 +267,8 @@ class BrainBridge {
             };
             onKicked = (reason) => {
                 try { this.bot.interrupt_code = true; this.bot.pathfinder?.setGoal(null); } catch { }
-                throwKicked(new Error(`Bot kicked during execution: ${reason || 'unknown'}`));
+                const reasonStr = reason?.toString?.() || String(reason) || 'unknown';
+                throwKicked(new Error(`Bot kicked during execution: ${reasonStr}`));
             };
 
             // We need deferred rejectors to be used inside listeners
@@ -383,26 +384,20 @@ class BrainBridge {
             case 'chat':
                 // Send chat message immediately
                 try {
-                    const playerName = data.player_name || data.player;
-
-                    // Remove emojis and non-ASCII characters, replacing with space to avoid word merging
+                    // Strip only emoji/pictograph symbols; preserve CJK (Chinese/Japanese/Korean) and other Unicode text
                     let cleanMessage = data.message
-                        .replace(/[\u{1F600}-\u{1F64F}]/gu, ' ')  // Emoticons
-                        .replace(/[\u{1F300}-\u{1F5FF}]/gu, ' ')  // Misc Symbols and Pictographs
-                        .replace(/[\u{1F680}-\u{1F6FF}]/gu, ' ')  // Transport and Map
-                        .replace(/[\u{2600}-\u{26FF}]/gu, ' ')   // Misc symbols
-                        .replace(/[\u{2700}-\u{27BF}]/gu, ' ')   // Dingbats
-                        .replace(/[\u{1F900}-\u{1F9FF}]/gu, ' ')  // Supplemental Symbols and Pictographs
-                        .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, ' ')  // Flags
-                        .replace(/[^\x20-\x7E]/g, ' ')           // Replace non-ASCII with space
-                        .replace(/\s+/g, ' ')                    // Collapse multiple spaces
+                        .replace(/[\u{1F600}-\u{1F64F}]/gu, '')  // Emoticons
+                        .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')  // Misc Symbols and Pictographs
+                        .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')  // Transport and Map
+                        .replace(/[\u{2700}-\u{27BF}]/gu, '')    // Dingbats
+                        .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')  // Supplemental Symbols and Pictographs
+                        .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, '')  // Flags
+                        .replace(/\s+/g, ' ')
                         .trim();
 
                     if (cleanMessage) {
-                        console.log(`💬 Immediate chat: ${cleanMessage}`);
-
-                        // Use /say command to broadcast to all players (bypasses chat signing)
-                        this.bot.chat(`/say ${cleanMessage}`);
+                        console.log(`💬 Chat: ${cleanMessage}`);
+                        this.bot.chat(cleanMessage);
                     } else {
                         console.warn('Chat message became empty after filtering');
                     }
@@ -1032,7 +1027,8 @@ class BrainBridge {
             await this.gracefulShutdown(`Bot disconnected: ${reason || 'Unknown'}`);
         });        // Kicked event (original project logic)
         this.bot.on('kicked', async (reason) => {
-            console.warn('Bot was kicked:', reason);
+            const reasonStr = reason?.toString?.() || String(reason) || 'Unknown';
+            console.warn('Bot was kicked:', reasonStr);
             this.isBotReady = false;
 
             // Stop state update interval
@@ -1046,7 +1042,7 @@ class BrainBridge {
                 await this.sendMessage({
                     type: 'shutdown',
                     data: {
-                        reason: `Bot was kicked: ${reason || 'Unknown'}`,
+                        reason: `Bot was kicked: ${reasonStr}`,
                         timestamp: Date.now()
                     }
                 });
@@ -1056,7 +1052,7 @@ class BrainBridge {
             }
 
             // Use the unified graceful shutdown
-            await this.gracefulShutdown(`Bot was kicked: ${reason || 'Unknown'}`);
+            await this.gracefulShutdown(`Bot was kicked: ${reasonStr}`);
         });
 
         // Entity hurt tracking

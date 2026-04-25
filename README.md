@@ -272,5 +272,46 @@ braincraft/
 ```
 ---
 
+## 已知问题与手动修复
+
+### Minecraft 1.21.5+ 发送聊天崩溃：`RangeError [ERR_OUT_OF_RANGE] ... Received 130`
+
+**现象**：Bot 在 Minecraft 1.21.5 / 1.21.6 / 1.21.8 服务器上调用 `bot.chat()` 发送消息时，抛出如下错误并崩溃：
+
+```
+RangeError [ERR_OUT_OF_RANGE]: Write error for undefined : The value of "value" is out of range.
+It must be >= -128 and <= 127. Received 130
+    at Object.writer [as i8] (...)
+    at Object.packet_chat_message (...)
+```
+
+**根本原因**：`minecraft-data` 的协议定义文件（`protocol.json`）中，1.21.5 新增的 `packet_chat_message.checksum` 字段被错误地声明为 `i8`（有符号字节，范围 -128\~127），而实际的校验和计算结果是无符号字节（范围 0\~255）。当校验和值超过 127 时（如 130），`protodef` 调用 `writeInt8` 写入失败。
+
+**手动修复步骤**：
+
+打开以下三个文件（根据你实际安装的 Minecraft 版本，修改对应文件即可）：
+
+```
+agent/bridge/node_modules/minecraft-data/minecraft-data/data/pc/1.21.5/protocol.json
+agent/bridge/node_modules/minecraft-data/minecraft-data/data/pc/1.21.6/protocol.json
+agent/bridge/node_modules/minecraft-data/minecraft-data/data/pc/1.21.8/protocol.json
+```
+
+在每个文件中，搜索 `packet_chat_message`（位于 `play.toServer.types` 下），找到其中的 `checksum` 字段，将类型从 `"i8"` 改为 `"u8"`：
+
+**修改前：**
+```json
+{"name": "checksum", "type": "i8"}
+```
+
+**修改后：**
+```json
+{"name": "checksum", "type": "u8"}
+```
+
+> 注意：每次执行 `npm install` 后，`node_modules` 目录会被重置，需要重新手动修复。
+
+---
+
 **更新日期**: 2026-03-26  
 **基于核心**: [MindCraft](https://github.com/mindcraft-bots/mindcraft)

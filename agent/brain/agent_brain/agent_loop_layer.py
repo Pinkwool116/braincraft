@@ -30,8 +30,8 @@ class AgentLoopLayer:
     """
 
     def __init__(self, shared_state, execution_layer, tool_registry, config, llm_model,
-                 prompt_manager, task_manager, memory_manager=None, todolist_manager=None,
-                 chat_log_manager=None):
+                 prompt_manager, memory_manager=None, plan_manager=None,
+                 draft_manager=None, todolist_store=None, chat_log_manager=None):
         """
         Initialize the Agent Loop Layer.
 
@@ -42,9 +42,10 @@ class AgentLoopLayer:
             config: Configuration dictionary
             llm_model: LLM model for decision making
             prompt_manager: PromptManager for building prompts
-            task_manager: TaskFileManager for task.md access
-            memory_manager: MemoryRouter instance (None in Phase 3)
-            todolist_manager: TodoListManager for todolist.md access
+            memory_manager: MemoryRouter instance
+            plan_manager: PlanManager for plan.md access
+            draft_manager: DraftManager for draft.md access
+            todolist_store: TodoListStore for structured todolist
             chat_log_manager: ChatLogManager for persisting received player messages
         """
         self.shared_state = shared_state
@@ -53,9 +54,10 @@ class AgentLoopLayer:
         self.config = config
         self.llm = llm_model
         self.prompt_manager = prompt_manager
-        self.task_manager = task_manager
         self.memory_manager = memory_manager
-        self.todolist_manager = todolist_manager
+        self.plan_manager = plan_manager
+        self.draft_manager = draft_manager
+        self.todolist_store = todolist_store
         self.chat_log_manager = chat_log_manager
 
         # Config parameters
@@ -179,11 +181,8 @@ class AgentLoopLayer:
         """
         state = await self.shared_state.get_all()
 
-        # Read task file
-        task_content = self.task_manager.read_task()
-
-        # Keep working memory context synced with current task
-        self._sync_task_context(task_content)
+        # Keep working memory context synced with todolist in_progress item
+        self._sync_task_context()
 
         # Drain chat queue
         pending_chat = self._drain_chat_queue()
@@ -208,14 +207,20 @@ class AgentLoopLayer:
                         with open(soul_path, 'r', encoding='utf-8') as f:
                             soul_content = f.read()
                     else:
-                        soul_content = "你是一个专业、乐于助人的 Minecraft 智能体。你的主要职责是根据玩家的指示在游戏世界中执行任务。请根据所给的游戏状态聪明地决策。"
+                        raise FileNotFoundError(f"soul.md not found at {soul_path}")
                 except Exception as e:
                     logger.error(f"Failed to load soul.md: {e}")
                     soul_content = ""
             self._soul_content = soul_content
 
-        # Read todolist file
-        todolist_content = self.todolist_manager.read() if self.todolist_manager else ''
+        # Read todolist (structured Markdown from TodoListStore)
+        todolist_content = self.todolist_store.get_markdown() if self.todolist_store else ''
+
+        # Read plan file (long-term strategic plan)
+        plan_content = self.plan_manager.read() if self.plan_manager else ''
+
+        # Read draft file (current-step technical thinking — replaces task.md)
+        draft_content = self.draft_manager.read() if self.draft_manager else ''
 
         # Read recent chat history
         chat_history = self.chat_log_manager.get_recent() if self.chat_log_manager else ''
@@ -226,8 +231,9 @@ class AgentLoopLayer:
             'agent_name': state.get('agent_name', 'BrainyBot'),
             'memory_manager': self.memory_manager,
             # Direct values for agent_loop/system.md
-            'TASK_FILE': task_content if task_content else "(编码草稿板为空)",
             'TODOLIST_FILE': todolist_content if todolist_content else "(待办清单为空)",
+            'PLAN_FILE': plan_content if plan_content else "(长期规划为空——用 plan 工具写下你的阶段目标和背景约束)",
+            'DRAFT_FILE': draft_content if draft_content else "(编码草稿为空——用 draft 工具给 Coding LLM 写技术提示)",
             'PENDING_CHAT': pending_chat if pending_chat else "(无新消息)",
             'CHAT_HISTORY': chat_history if chat_history else "(无聊天记录)",
             'TOOL_DESCRIPTIONS': self.tool_registry.get_tool_descriptions(),
@@ -354,12 +360,21 @@ class AgentLoopLayer:
                 metadata=metadata,
             )
 
-        elif tool_name == 'update_task':
+        elif tool_name == 'draft':
             action = tool_args.get('action', 'write')
             content_preview = str(tool_args.get('content', ''))[:100]
             self.memory_manager.log(
                 entry_type='reasoning',
-                content=f"更新任务文件 (action={action}): {content_preview}",
+                content=f"更新编码草稿 (action={action}): {content_preview}",
+                metadata=metadata,
+            )
+
+        elif tool_name == 'plan':
+            action = tool_args.get('action', 'write')
+            content_preview = str(tool_args.get('content', ''))[:100]
+            self.memory_manager.log(
+                entry_type='reasoning',
+                content=f"更新长期规划 (action={action}): {content_preview}",
                 metadata=metadata,
             )
 
@@ -372,13 +387,31 @@ class AgentLoopLayer:
             )
 
         elif tool_name == 'todolist':
-            action = tool_args.get('action', 'read')
-            content_preview = str(tool_args.get('content', ''))[:100]
-            self.memory_manager.log(
-                entry_type='reasoning',
-                content=f"管理待办清单 (action={action}): {content_preview}",
-                metadata=metadata,
-            )
+            action = tool_args.get('action', 'write')
+            if action in ('add', 'remove', 'update', 'move'):
+                self.memory_manager.log(
+                    entry_type='action',
+                    content=f"修改待办清单 (action={action}): {str(tool_args)[:200]}",
+                    metadata=metadata,
+                )
+            elif action == 'set_status':
+                item_id = tool_args.get('id', '?')
+                status = tool_args.get('status', '?')
+                result_flag = result.get('draft_cleared', False)
+                log_content = f"切换待办焦点: {item_id} → {status}"
+                if result_flag:
+                    log_content += " (draft已清空)"
+                self.memory_manager.log(
+                    entry_type='reasoning',
+                    content=log_content,
+                    metadata=metadata,
+                )
+            elif action == 'overwrite':
+                self.memory_manager.log(
+                    entry_type='reasoning',
+                    content=f"全量重构待办清单 [CRYSTALLIZE_FLAG]: {str(tool_args.get('content', ''))[:100]}",
+                    metadata=metadata,
+                )
 
         elif tool_name == 'interrupt_execution':
             self.memory_manager.log(
@@ -632,33 +665,89 @@ class AgentLoopLayer:
 
     async def _maybe_crystallize(self, tool_call: dict, result: dict):
         """
-        Trigger crystallize (working memory → long-term graph) when task is cleared.
-
-        Crystallize when the agent calls update_task with action='clear', or
-        writes empty content — meaning the current task episode has ended.
+        Trigger crystallize (working memory → long-term graph) on:
+        1. All top-level todolist items are done
+        2. plan(action='write') wrote a new phase goal
+        3. todolist(action='overwrite') was executed (major refactor)
         """
         if not self.memory_manager:
             return
         tool_name = tool_call.get('tool')
-        if tool_name != 'update_task':
-            return
-        action = tool_call.get('tool_args', {}).get('action', '')
-        content = tool_call.get('tool_args', {}).get('content', '')
-        if action == 'clear' or (action == 'write' and not content.strip()):
+        tool_args = tool_call.get('tool_args', {})
+
+        should_crystallize = False
+
+        # Trigger 1: todolist all done
+        if (tool_name == 'todolist' and
+                tool_args.get('action') == 'set_status' and
+                tool_args.get('status') == 'done'):
+            if self.todolist_store and self.todolist_store.is_all_done():
+                should_crystallize = True
+                logger.info("All todolist items done — crystallizing...")
+
+        # Trigger 2: plan write new phase goal
+        if tool_name == 'plan' and tool_args.get('action') == 'write':
+            content = tool_args.get('content', '')
+            if content.strip().startswith('# 当前阶段目标'):
+                should_crystallize = True
+                logger.info("New plan phase goal written — crystallizing...")
+
+        # Trigger 3: todolist overwrite (major refactor)
+        if tool_name == 'todolist' and tool_args.get('action') == 'overwrite':
+            should_crystallize = True
+            logger.info("Todolist overwritten — crystallizing...")
+
+        if should_crystallize:
             try:
-                logger.info("Task cleared — crystallizing working memory to long-term graph...")
                 await self.memory_manager.crystallize(self.llm)
             except Exception as e:
                 logger.warning(f"Memory crystallize failed: {e}")
 
-    def _sync_task_context(self, task_content: str):
-        """Keep working memory context.goal in sync with the current task.md content."""
+    def _sync_task_context(self):
+        """
+        Keep working memory context.goal in sync.
+
+        Uses the deepest in_progress todolist item as goal.
+        Falls back to plan.md's '# 当前阶段目标' section.
+        """
         if not self.memory_manager:
             return
         try:
             wm = self.memory_manager.working_memory
-            goal = task_content.strip()[:300] if task_content.strip() else '（空闲）'
+            goal = ''
+
+            if self.todolist_store:
+                goal = self.todolist_store.get_in_progress_text()
+                if goal:
+                    goal = goal[:300]
+
+            if not goal and self.plan_manager:
+                plan_content = self.plan_manager.read()
+                goal = self._extract_phase_goal(plan_content)
+
+            if not goal:
+                goal = '（空闲）'
+
             if wm.context.get('goal') != goal:
                 wm.context['goal'] = goal
         except Exception:
             pass
+
+    @staticmethod
+    def _extract_phase_goal(plan_content: str) -> str:
+        """Extract the current phase goal from plan.md content."""
+        if not plan_content:
+            return ''
+        lines = plan_content.split('\n')
+        in_phase_section = False
+        for line in lines:
+            if line.strip().startswith('# 当前阶段目标'):
+                in_phase_section = True
+                continue
+            if in_phase_section:
+                stripped = line.strip()
+                if stripped.startswith('#'):
+                    break  # Next section header
+                if stripped:
+                    return stripped[:300]
+        return ''

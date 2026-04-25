@@ -35,7 +35,8 @@ class ExecutionLayer:
     is_executing: bool = False
 
     def __init__(self, shared_state, ipc_server, exec_coordinator, config,
-                 coding_llm, prompt_manager, memory_manager=None, task_manager=None):
+                 coding_llm, prompt_manager, memory_manager=None,
+                 draft_manager=None, chat_log_manager=None):
         """
         Initialize the Execution Layer.
 
@@ -46,8 +47,8 @@ class ExecutionLayer:
             config: Configuration dictionary
             coding_llm: LLM model for code generation
             prompt_manager: PromptManager for building coding prompts
-            memory_manager: MemoryRouter instance (None in Phase 3)
-            task_manager: TaskFileManager for reading task.md into coding context
+            memory_manager: MemoryRouter instance
+            draft_manager: DraftManager for reading draft.md into coding context
         """
         self.shared_state = shared_state
         self.ipc_server = ipc_server
@@ -56,7 +57,8 @@ class ExecutionLayer:
         self.coding_llm = coding_llm
         self.prompt_manager = prompt_manager
         self.memory_manager = memory_manager
-        self.task_manager = task_manager
+        self.draft_manager = draft_manager
+        self.chat_log_manager = chat_log_manager
         self.is_executing = False
 
         # Prompt Logger
@@ -230,16 +232,19 @@ class ExecutionLayer:
             {'success': bool, 'message': str}
         """
         try:
-            # Escape quotes for JS string
-            escaped = message.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+            # Use 'chat' command type so it goes through handleImmediateCommand in JS
+            # This avoids starting a concurrent executeCode call while execute_step may be running
             await self.ipc_server.send_command({
-                'type': 'execute_code',
+                'type': 'chat',
                 'data': {
-                    'code': f'bot.chat("{escaped}");',
-                    'no_response': True
+                    'message': message,
                 }
             })
             logger.info(f"Chat sent: {message[:50]}")
+            # Log the bot's own reply to chat_log.md
+            if self.chat_log_manager:
+                agent_name = self.config.get('agent_name', 'BrainyBot')
+                self.chat_log_manager.append(agent_name, message)
             return {'success': True, 'message': message}
         except Exception as e:
             logger.error(f"send_chat error: {e}")
@@ -309,8 +314,8 @@ class ExecutionLayer:
         # Build execution context (memory-enriched)
         execution_context = await self._build_execution_context(step_description)
 
-        # Read task.md for decision-layer notes
-        task_file_content = self.task_manager.read_task() if self.task_manager else ''
+        # Read draft.md for decision-layer notes (Phase 2: replaces task.md)
+        draft_file_content = self.draft_manager.read() if self.draft_manager else ''
 
         # Context for prompt variable resolution
         context = {
@@ -319,7 +324,7 @@ class ExecutionLayer:
             'memory_manager': self.memory_manager,
             # Direct values (Special Direct Values per variable_config.yaml)
             'TASK': step_description,
-            'TASK_FILE': task_file_content if task_file_content else '(无决策层笔记)',
+            'DRAFT_FILE': draft_file_content if draft_file_content else '(无决策层笔记)',
             'EXECUTION_CONTEXT': execution_context,
             'EXAMPLES': '',  # TODO: Load code examples from file
         }
