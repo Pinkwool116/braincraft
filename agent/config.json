@@ -3,29 +3,18 @@
     "ipc_port": 9000,
     "keys_file": "keys.json",
     "enable_prompt_logging": true,
+
     "agent_loop": {
-        "model_name": "qwen-max",
-        "api": "qwen",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "params": {
-            "temperature": 0.7,
-            "max_tokens": 8000,
-            "top_p": 0.9
-        },
+        "model": "qwen_max",
         "max_consecutive_loops": 50,
         "idle_interval_seconds": 30
     },
+
     "execution": {
-        "model_name": "qwen-max",
-        "api": "qwen",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "params": {
-            "temperature": 0.3,
-            "max_tokens": 4000,
-            "top_p": 0.9
-        },
+        "model": "qwen_max",
         "timeout": 120
     },
+
     "reflex": {
         "interval_seconds": 0.1,
         "modes": {
@@ -38,17 +27,75 @@
             "idle_staring": true
         }
     },
+
     "memory": {
         "consolidate_interval": 5,
         "enable_crystallize": true
     },
+
     "embedding": {
         "api": "qwen",
         "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "text-embedding-v3"
     },
-    "_alternative_models": {
-        "openai_loop": {
+
+    "model_presets": {
+        "_usage": "Set 'model' in agent_loop/execution to any key below to switch. Fill the corresponding key in keys.json first.",
+
+        "deepseek_v4_pro": {
+            "model_name": "deepseek-v4-pro",
+            "api": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 20000,
+                "thinking": {"type": "enabled", "reasoning_effort": "high"}
+            }
+        },
+
+        "deepseek_v4_pro_nothink": {
+            "model_name": "deepseek-v4-pro",
+            "api": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 20000
+            }
+        },
+
+        "deepseek_v4_flash": {
+            "model_name": "deepseek-v4-flash",
+            "api": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 20000
+            }
+        },
+
+        "deepseek_v4_flash_think": {
+            "model_name": "deepseek-v4-flash",
+            "api": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 20000,
+                "thinking": {"type": "enabled", "reasoning_effort": "high"}
+            }
+        },
+
+        "qwen_max": {
+            "model_name": "qwen-max",
+            "api": "qwen",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "params": {
+                "temperature": 0.7,
+                "max_tokens": 8000,
+                "top_p": 0.9
+            }
+        },
+
+        "openai_gpt4o": {
             "model_name": "gpt-4o",
             "api": "openai",
             "params": {
@@ -56,37 +103,23 @@
                 "max_tokens": 4000
             }
         },
-        "openai_execution": {
-            "model_name": "gpt-4o-mini",
-            "api": "openai",
-            "params": {
-                "temperature": 0.3,
-                "max_tokens": 4000
-            }
-        },
-        "claude": {
-            "model_name": "claude-3-5-sonnet-20241022",
+
+        "claude_sonnet": {
+            "model_name": "claude-sonnet-4-20250514",
             "api": "anthropic",
             "params": {
                 "temperature": 0.7,
                 "max_tokens": 4000
             }
         },
-        "deepseek": {
-            "model_name": "deepseek-chat",
-            "api": "deepseek",
-            "params": {
-                "temperature": 0.7,
-                "max_tokens": 4000
-            }
-        },
+
         "local_ollama": {
             "model_name": "llama3.1:8b",
             "api": "ollama",
-            "base_url": "http://localhost:11434",
+            "base_url": "http://localhost:11434/v1",
             "params": {
                 "temperature": 0.7,
-                "num_ctx": 8192
+                "max_tokens": 2000
             }
         }
     }

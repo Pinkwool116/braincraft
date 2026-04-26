@@ -13,7 +13,7 @@ from .interrupt_tool import InterruptTool
 from .wait_tool import WaitTool
 from .plan_tool import PlanTool
 from .draft_tool import DraftTool
-from .todolist_tool_v2 import TodolistToolV2
+from .todolist_tool import TodolistTool
 
 __all__ = [
     'ToolRegistry',
@@ -24,5 +24,5 @@ __all__ = [
     'WaitTool',
     'PlanTool',
     'DraftTool',
-    'TodolistToolV2',
+    'TodolistTool',
 ]

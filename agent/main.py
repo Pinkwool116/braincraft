@@ -82,18 +82,24 @@ async def main():
         logger.info(f"Agent: {agent_name}")
 
         # Validate new-style config sections
+        model_presets = config.get('model_presets', {})
+
         if 'agent_loop' not in config:
             logger.warning("Config missing 'agent_loop' section — check config.json")
         else:
-            loop_model = config['agent_loop'].get('model_name', '?')
-            loop_api = config['agent_loop'].get('api', '?')
+            loop_cfg = config['agent_loop']
+            loop_resolved = model_presets.get(loop_cfg.get('model', ''), loop_cfg)
+            loop_model = loop_resolved.get('model_name', '?')
+            loop_api = loop_resolved.get('api', '?')
             logger.info(f"Agent Loop model: {loop_model} ({loop_api})")
 
         if 'execution' not in config:
             logger.warning("Config missing 'execution' section — check config.json")
         else:
-            exec_model = config['execution'].get('model_name', '?')
-            exec_api = config['execution'].get('api', '?')
+            exec_cfg = config['execution']
+            exec_resolved = model_presets.get(exec_cfg.get('model', ''), exec_cfg)
+            exec_model = exec_resolved.get('model_name', '?')
+            exec_api = exec_resolved.get('api', '?')
             logger.info(f"Execution model: {exec_model} ({exec_api})")
 
         if 'memory' in config:

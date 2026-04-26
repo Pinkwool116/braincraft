@@ -21,7 +21,7 @@ from ..tools.interrupt_tool import InterruptTool
 from ..tools.wait_tool import WaitTool
 from ..tools.plan_tool import PlanTool
 from ..tools.draft_tool import DraftTool
-from ..tools.todolist_tool_v2 import TodolistToolV2
+from ..tools.todolist_tool import TodolistTool
 from ..task_manager import ChatLogManager, PlanManager, DraftManager, TodoListStore
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
@@ -132,12 +132,12 @@ class BrainCoordinator:
             ipc_server=self.ipc_server
         )
 
-        # Initialize LLM models from config
-        agent_loop_llm_config = config.get('agent_loop', {}).copy()
+        # Initialize LLM models from config (resolve preset references first)
+        agent_loop_llm_config = self._resolve_model(config.get('agent_loop', {}).copy())
         self._inject_api_keys(agent_loop_llm_config)
         self.agent_loop_llm = create_llm_model(agent_loop_llm_config)
 
-        execution_llm_config = config.get('execution', {}).copy()
+        execution_llm_config = self._resolve_model(config.get('execution', {}).copy())
         self._inject_api_keys(execution_llm_config)
         self.coding_llm = create_llm_model(execution_llm_config)
 
@@ -367,6 +367,26 @@ class BrainCoordinator:
 
         logger.info("IPC message handlers registered")
 
+    def _resolve_model(self, llm_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve 'model' reference from model_presets, merging layer-specific overrides."""
+        model_key = llm_config.get('model')
+        if not model_key:
+            return llm_config
+
+        presets = self.config.get('model_presets', {})
+        preset = presets.get(model_key)
+        if not preset:
+            logger.warning(f"Model '{model_key}' not found in model_presets, using config as-is")
+            return llm_config
+
+        # Start from preset, then overlay any extra keys from the layer config
+        # (e.g. agent_loop may set max_consecutive_loops, execution may set timeout)
+        resolved = dict(preset)
+        for k, v in llm_config.items():
+            if k != 'model':
+                resolved[k] = v
+        return resolved
+
     def _inject_api_keys(self, llm_config: Dict[str, Any]):
         """Inject API keys from keys.json into LLM config"""
         import os
@@ -403,7 +423,7 @@ class BrainCoordinator:
         self.tool_registry.register('recall_memory', RecallMemoryTool(self.memory_manager))
         self.tool_registry.register('interrupt_execution', InterruptTool(self.execution_layer))
 
-        self.tool_registry.register('todolist', TodolistToolV2(self.todolist_store))
+        self.tool_registry.register('todolist', TodolistTool(self.todolist_store))
 
         self.tool_registry.register('plan', PlanTool(self.plan_manager))
 

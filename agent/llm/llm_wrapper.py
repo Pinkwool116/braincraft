@@ -137,43 +137,67 @@ class AnthropicModel(LLMModel):
 class DeepSeekModel(LLMModel):
     """
     DeepSeek API wrapper (OpenAI-compatible)
+
+    Supports: deepseek-v4-pro (with thinking), deepseek-v4-flash
+    API docs: https://api-docs.deepseek.com/zh-cn/api/create-chat-completion
     """
-    
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         api_key = config.get('api_key', os.getenv('DEEPSEEK_API_KEY'))
-        base_url = config.get('base_url', 'https://api.deepseek.com/v1')
-        
+        base_url = config.get('base_url', 'https://api.deepseek.com')
+
         if not api_key:
             raise ValueError("DeepSeek API key not found. Set DEEPSEEK_API_KEY environment variable or provide in config.")
-        
+
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url
         )
-        logger.info(f"DeepSeek client initialized: {self.model_name}")
-    
+        logger.info(f"DeepSeek client initialized: {self.model_name} (base_url={base_url})")
+
     async def send_request(
-        self, 
-        messages: List[Dict[str, str]], 
+        self,
+        messages: List[Dict[str, str]],
         system_prompt: str = None
     ) -> str:
         """Send request to DeepSeek API"""
-        
-        # Prepare messages
+
         full_messages = []
         if system_prompt:
             full_messages.append({"role": "system", "content": system_prompt})
         full_messages.extend(messages)
-        
+
+        kwargs = {
+            'model': self.model_name,
+            'messages': full_messages,
+            'temperature': self.params.get('temperature', 0.7),
+            'max_tokens': self.params.get('max_tokens', 10000),
+            'top_p': self.params.get('top_p', 1.0),
+        }
+
+        if 'frequency_penalty' in self.params:
+            kwargs['frequency_penalty'] = self.params['frequency_penalty']
+        if 'presence_penalty' in self.params:
+            kwargs['presence_penalty'] = self.params['presence_penalty']
+        if 'stop' in self.params:
+            kwargs['stop'] = self.params['stop']
+
+        # DeepSeek thinking mode (extra_body for OpenAI SDK compatibility)
+        thinking_config = self.params.get('thinking', None)
+        if thinking_config is not None:
+            kwargs['extra_body'] = {'thinking': thinking_config}
+
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=full_messages,
-                temperature=self.params.get('temperature', 0.7),
-                max_tokens=self.params.get('max_tokens', 2000)
-            )
-            return response.choices[0].message.content
+            response = await self.client.chat.completions.create(**kwargs)
+            choice = response.choices[0]
+
+            # Log reasoning content if in thinking mode
+            reasoning = getattr(choice.message, 'reasoning_content', None)
+            if reasoning:
+                logger.debug(f"DeepSeek reasoning ({len(reasoning)} chars): {reasoning[:200]}...")
+
+            return choice.message.content
         except Exception as e:
             logger.error(f"DeepSeek API error: {e}")
             raise
