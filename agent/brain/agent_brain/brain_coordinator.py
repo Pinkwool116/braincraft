@@ -141,6 +141,11 @@ class BrainCoordinator:
         self._inject_api_keys(execution_llm_config)
         self.coding_llm = create_llm_model(execution_llm_config)
 
+        # Memory operations LLM (consolidation + crystallize)
+        memory_llm_config = self._resolve_model(config.get('memory', {}).copy())
+        self._inject_api_keys(memory_llm_config)
+        self.memory_llm = create_llm_model(memory_llm_config)
+
         # Prompt manager
         self.prompt_manager = PromptManager()
 
@@ -163,6 +168,7 @@ class BrainCoordinator:
             agent_name=config.get('agent_name', 'BrainyBot'),
             enable_logging=enable_logging,
             embedding_config=embedding_config,
+            llm=self.memory_llm,
         )
         logger.info("MemoryRouter initialized")
 
@@ -490,7 +496,7 @@ class BrainCoordinator:
         if self.memory_manager:
             try:
                 logger.info("Crystallizing working memory before shutdown...")
-                await self.memory_manager.crystallize(self.agent_loop_llm)
+                await self.memory_manager.crystallize()
             except Exception as e:
                 logger.warning(f"Memory crystallize on shutdown failed: {e}")
 

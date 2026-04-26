@@ -103,8 +103,12 @@ async def main():
             logger.info(f"Execution model: {exec_model} ({exec_api})")
 
         if 'memory' in config:
-            logger.info(f"Memory: consolidate_interval={config['memory'].get('consolidate_interval', 20)}, "
-                        f"crystallize={config['memory'].get('enable_crystallize', True)}")
+            mem_cfg = config['memory']
+            mem_resolved = model_presets.get(mem_cfg.get('model', ''), mem_cfg)
+            mem_model = mem_resolved.get('model_name', '?')
+            logger.info(f"Memory model: {mem_model} — "
+                        f"consolidate={mem_cfg.get('consolidate_interval', 20)}, "
+                        f"crystallize={mem_cfg.get('enable_crystallize', True)}")
 
         if 'embedding' in config:
             embed_model = config['embedding'].get('model', '?')

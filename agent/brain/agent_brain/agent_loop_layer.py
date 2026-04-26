@@ -666,7 +666,7 @@ class AgentLoopLayer:
         try:
             if self.memory_manager.should_consolidate():
                 logger.debug("Triggering working memory consolidation...")
-                await self.memory_manager.consolidate(self.llm)
+                await self.memory_manager.consolidate()
         except Exception as e:
             logger.debug(f"Working memory consolidation failed: {e}")
 
@@ -706,7 +706,7 @@ class AgentLoopLayer:
 
         if should_crystallize:
             try:
-                await self.memory_manager.crystallize(self.llm)
+                await self.memory_manager.crystallize()
             except Exception as e:
                 logger.warning(f"Memory crystallize failed: {e}")
 

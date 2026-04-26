@@ -11,7 +11,7 @@
     },
 
     "execution": {
-        "model": "deepseek_v4_pro",
+        "model": "deepseek_v4_flash_think",
         "timeout": 120
     },
 
@@ -29,6 +29,7 @@
     },
 
     "memory": {
+        "model": "deepseek_v4_flash_think",
         "consolidate_interval": 20,
         "enable_crystallize": true
     },

@@ -31,18 +31,21 @@ class MemoryRouter:
     管理工作记忆（短期）和图谱记忆（长期）两个层级。
     """
 
-    def __init__(self, agent_name: str, enable_logging: bool = True, embedding_config: Dict = None):
+    def __init__(self, agent_name: str, enable_logging: bool = True, embedding_config: Dict = None, llm=None):
         self.agent_name = agent_name
-        
+
         # 长期记忆：图谱
         self.engine = GraphEngine(agent_name)
         self.retriever = GraphRetriever(self.engine)
-        
+
         # 语义向量化
         self.embedding = EmbeddingProvider(agent_name, embedding_config)
-        
+
         # 工作记忆缓冲区
         self.working_memory = WorkingMemoryBuffer(agent_name)
+
+        # 记忆操作专用 LLM（压缩 + 反思蒸馏）
+        self.llm = llm
 
         # 动态获取 bots_dir
         from pathlib import Path
@@ -121,12 +124,15 @@ class MemoryRouter:
         """检查工作记忆是否需要滚动压缩。"""
         return self.working_memory.should_consolidate()
 
-    async def consolidate(self, llm_wrapper) -> None:
+    async def consolidate(self) -> None:
         """
         滚动压缩：将当前摘要与新增原始条目一起输入 LLM，
         LLM 输出新的完整摘要全量替换旧摘要。
         已消费的原始条目从工作记忆中移除。
         """
+        if not self.llm:
+            logger.warning("未配置 memory LLM，跳过 consolidate")
+            return
         if not self.consolidation_prompt_template:
             logger.warning("缺少压缩提示词模板，跳过 consolidate")
             return
@@ -160,7 +166,7 @@ class MemoryRouter:
         )
 
         try:
-            response = await llm_wrapper.send_request(
+            response = await self.llm.send_request(
                 [{"role": "user", "content": prompt}]
             )
             self.prompt_logger.update_response(prompt_file, response)
@@ -198,18 +204,14 @@ class MemoryRouter:
 
     # ==================== 反思（工作记忆 → 长期记忆） ====================
 
-    async def crystallize(self, llm_wrapper) -> None:
+    async def crystallize(self) -> None:
         """
         反思过程：将工作记忆蒸馏为长期记忆图谱节点和边。
         在任务边界点（结束/放弃）调用。
-        
-        流程：
-        1. 收集工作记忆缓冲区内容
-        2. 检索已有图谱中的相关上下文（让 LLM 知道"我已经知道什么"）
-        3. 调用 LLM 从经历中提炼值得长期记住的内容
-        4. 将结果整合到图谱
-        5. 清空工作记忆
         """
+        if not self.llm:
+            logger.warning("未配置 memory LLM，跳过 crystallize")
+            return
         if not self.working_memory.has_content:
             logger.debug("工作记忆为空，跳过 crystallize")
             return
@@ -219,11 +221,9 @@ class MemoryRouter:
             return
 
         buffer_text = self.working_memory.get_buffer_text()
-        
-        # 检索已有的相关记忆，供 LLM 参考避免重复
+
         existing_context = self._get_existing_context_for_reflection()
 
-        # 构建反思提示词
         prompt = self.extraction_prompt_template.replace("{buffer_text}", buffer_text)
         prompt = prompt.replace("{existing_context}", existing_context)
 
@@ -234,7 +234,7 @@ class MemoryRouter:
         )
 
         try:
-            response = await llm_wrapper.send_request(
+            response = await self.llm.send_request(
                 [{"role": "user", "content": prompt}]
             )
             self.prompt_logger.update_response(prompt_file, response)
