@@ -144,6 +144,16 @@ class AgentLoopLayer:
                     f"thinking={thinking[:80]}..."
                 )
 
+                # Log thinking as standalone working memory entry
+                if thinking and self.memory_manager:
+                    try:
+                        self.memory_manager.log(
+                            entry_type='reasoning',
+                            content=f"本轮思考: {thinking}",
+                        )
+                    except Exception:
+                        pass
+
                 # Execute tool (with interrupt watch for long-running tools)
                 tool_name = tool_call.get('tool')
                 if tool_name in self.INTERRUPTIBLE_TOOLS:
@@ -319,27 +329,27 @@ class AgentLoopLayer:
                 logger.debug(f"Failed to log to working memory: {e}")
 
     def _log_to_working_memory(self, tool_call: dict, result: dict):
-        """Build and append a rich working memory entry for this tool call."""
+        """Build and append a working memory entry for this tool call.
+
+        Note: LLM thinking is logged separately in run_loop() as a standalone
+        reasoning entry, so it is NOT duplicated here. No content is truncated.
+        """
         tool_name = tool_call.get('tool', 'unknown')
-        thinking = tool_call.get('thinking', '')
         tool_args = tool_call.get('tool_args', {})
         success = result.get('success', True)
-
-        metadata = {'thinking': thinking[:300]} if thinking else None
 
         if tool_name == 'execute_step':
             step_desc = tool_args.get('step_description', '')
             status = '成功' if success else '失败'
             detail_parts = [f"结果: {status}"]
             if result.get('output'):
-                detail_parts.append(f"输出: {result['output'][:300]}")
+                detail_parts.append(f"输出: {result['output']}")
             if not success and result.get('error'):
-                detail_parts.append(f"错误: {result['error'][:300]}")
+                detail_parts.append(f"错误: {result['error']}")
             self.memory_manager.log(
                 entry_type='action',
                 content=f"执行步骤: {step_desc}",
                 detail='\n'.join(detail_parts),
-                metadata=metadata,
             )
 
         elif tool_name == 'chat':
@@ -347,7 +357,6 @@ class AgentLoopLayer:
             self.memory_manager.log(
                 entry_type='interaction',
                 content=f"发送消息: {message}",
-                metadata=metadata,
             )
 
         elif tool_name == 'recall_memory':
@@ -356,26 +365,21 @@ class AgentLoopLayer:
             self.memory_manager.log(
                 entry_type='reasoning',
                 content=f"查询记忆: {query}",
-                detail=memories[:300] if memories else None,
-                metadata=metadata,
+                detail=memories if memories else None,
             )
 
         elif tool_name == 'draft':
             action = tool_args.get('action', 'write')
-            content_preview = str(tool_args.get('content', ''))[:100]
             self.memory_manager.log(
                 entry_type='reasoning',
-                content=f"更新编码草稿 (action={action}): {content_preview}",
-                metadata=metadata,
+                content=f"更新编码草稿 (action={action}): {tool_args.get('content', '')}",
             )
 
         elif tool_name == 'plan':
             action = tool_args.get('action', 'write')
-            content_preview = str(tool_args.get('content', ''))[:100]
             self.memory_manager.log(
                 entry_type='reasoning',
-                content=f"更新长期规划 (action={action}): {content_preview}",
-                metadata=metadata,
+                content=f"更新长期规划 (action={action}): {tool_args.get('content', '')}",
             )
 
         elif tool_name == 'wait':
@@ -383,7 +387,6 @@ class AgentLoopLayer:
             self.memory_manager.log(
                 entry_type='reasoning',
                 content=f"主动等待 {seconds} 秒",
-                metadata=metadata,
             )
 
         elif tool_name == 'todolist':
@@ -391,8 +394,7 @@ class AgentLoopLayer:
             if action in ('add', 'remove', 'update', 'move'):
                 self.memory_manager.log(
                     entry_type='action',
-                    content=f"修改待办清单 (action={action}): {str(tool_args)[:200]}",
-                    metadata=metadata,
+                    content=f"修改待办清单 (action={action}): {tool_args}",
                 )
             elif action == 'set_status':
                 item_id = tool_args.get('id', '?')
@@ -404,29 +406,25 @@ class AgentLoopLayer:
                 self.memory_manager.log(
                     entry_type='reasoning',
                     content=log_content,
-                    metadata=metadata,
                 )
             elif action == 'overwrite':
                 self.memory_manager.log(
                     entry_type='reasoning',
-                    content=f"全量重构待办清单 [CRYSTALLIZE_FLAG]: {str(tool_args.get('content', ''))[:100]}",
-                    metadata=metadata,
+                    content=f"全量重构待办清单 [CRYSTALLIZE_FLAG]: {tool_args.get('content', '')}",
                 )
 
         elif tool_name == 'interrupt_execution':
             self.memory_manager.log(
                 entry_type='action',
                 content='中断代码执行',
-                detail=json.dumps(result, ensure_ascii=False)[:200],
-                metadata=metadata,
+                detail=json.dumps(result, ensure_ascii=False),
             )
 
         else:
             self.memory_manager.log(
                 entry_type='action',
                 content=f"调用工具 '{tool_name}'",
-                detail=json.dumps(result, ensure_ascii=False)[:300],
-                metadata=metadata,
+                detail=json.dumps(result, ensure_ascii=False),
             )
 
     # ========== Interrupt Watch ==========
@@ -623,6 +621,15 @@ class AgentLoopLayer:
                 # Persist to chat log
                 if self.chat_log_manager:
                     self.chat_log_manager.append(player, content)
+                # Log to working memory
+                if self.memory_manager:
+                    try:
+                        self.memory_manager.log(
+                            entry_type='interaction',
+                            content=f"收到消息 [{player}]: {content}",
+                        )
+                    except Exception:
+                        pass
             except asyncio.QueueEmpty:
                 break
 
@@ -718,8 +725,6 @@ class AgentLoopLayer:
 
             if self.todolist_store:
                 goal = self.todolist_store.get_in_progress_text()
-                if goal:
-                    goal = goal[:300]
 
             if not goal and self.plan_manager:
                 plan_content = self.plan_manager.read()
@@ -749,5 +754,5 @@ class AgentLoopLayer:
                 if stripped.startswith('#'):
                     break  # Next section header
                 if stripped:
-                    return stripped[:300]
+                    return stripped
         return ''

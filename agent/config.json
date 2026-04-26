@@ -5,13 +5,13 @@
     "enable_prompt_logging": true,
 
     "agent_loop": {
-        "model": "qwen_max",
+        "model": "deepseek_v4_pro",
         "max_consecutive_loops": 50,
         "idle_interval_seconds": 30
     },
 
     "execution": {
-        "model": "qwen_max",
+        "model": "deepseek_v4_pro",
         "timeout": 120
     },
 
@@ -29,7 +29,7 @@
     },
 
     "memory": {
-        "consolidate_interval": 5,
+        "consolidate_interval": 20,
         "enable_crystallize": true
     },
 

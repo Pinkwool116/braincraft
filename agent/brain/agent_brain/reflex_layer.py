@@ -37,7 +37,8 @@ class ReflexLayer:
     Uses ExecutionCoordinator for priority-based interruption.
     """
 
-    def __init__(self, shared_state, exec_coordinator, ipc_server, config):
+    def __init__(self, shared_state, exec_coordinator, ipc_server, config,
+                 memory_manager=None):
         """
         Initialize the Reflex Layer.
 
@@ -46,13 +47,16 @@ class ReflexLayer:
             exec_coordinator: ExecutionCoordinator for priority management
             ipc_server: IPC server for sending commands to JS
             config: Configuration dictionary (full config with 'reflex' key)
+            memory_manager: MemoryRouter for logging reflex events to working memory
         """
         self.shared_state = shared_state
         self.exec_coordinator = exec_coordinator
         self.ipc_server = ipc_server
         self.config = config
+        self.memory_manager = memory_manager
 
-        # Extract reflex-specific config
+        # Reflex log debounce (seconds between same-type entries)
+        self._last_reflex_log: Dict[str, float] = {}
         reflex_config = config.get('reflex', {})
         self.modes_config = reflex_config.get('modes', {})
         self.interval = reflex_config.get('interval_seconds', 0.1)
@@ -107,6 +111,21 @@ class ReflexLayer:
         }
 
         logger.info("ReflexLayer initialized")
+
+    # ========== Memory Logging ==========
+
+    def _log_reflex(self, event_type: str, content: str):
+        """Log a reflex event to working memory with debounce (30s per type)."""
+        if not self.memory_manager:
+            return
+        now = time.time()
+        if now - self._last_reflex_log.get(event_type, 0) < 30:
+            return
+        self._last_reflex_log[event_type] = now
+        try:
+            self.memory_manager.log(entry_type='observation', content=content)
+        except Exception as e:
+            logger.debug(f"Failed to log reflex event: {e}")
 
     # ========== Execution Helper ==========
 
@@ -216,6 +235,7 @@ class ReflexLayer:
         """
         enemy_type = data.get('enemy_type', 'enemy')
         logger.info(f"Combat reflex triggered: Fighting {enemy_type}!")
+        self._log_reflex('combat', f"反射层触发战斗: 与 {enemy_type} 交战")
 
         await self._execute_with_coordinator(
             layer='low_reflex',
@@ -261,6 +281,7 @@ class ReflexLayer:
             return
 
         logger.warning(f"Low health reflex triggered: health={health}")
+        self._log_reflex('low_health', f"反射层触发低血量逃生: 血量={health}, 向远处逃离")
 
         await self._execute_with_coordinator(
             layer='low_reflex',
@@ -274,6 +295,8 @@ class ReflexLayer:
         self.last_damage_time = data.get('timestamp', time.time())
         self.last_damage_amount = data.get('damage', 0)
         logger.debug(f"Damage taken: {self.last_damage_amount}")
+        if self.last_damage_amount >= 3:
+            self._log_reflex('damage', f"反射层检测到受伤: 受到 {self.last_damage_amount} 点伤害")
 
     async def _handle_on_fire(self, event: Dict[str, Any]):
         """
@@ -281,6 +304,7 @@ class ReflexLayer:
         Priority: water bucket > nearest water > move away.
         """
         logger.warning("On fire reflex triggered!")
+        self._log_reflex('on_fire', '反射层触发着火逃生: 正在寻找水源或逃离')
         position = event.get('position', {})
         has_water_bucket = event.get('has_water_bucket', False)
 
@@ -342,6 +366,7 @@ class ReflexLayer:
             return
 
         logger.debug("Drowning reflex: swimming up")
+        self._log_reflex('drowning', '反射层触发溺水逃生: 正在向上游')
         try:
             await self.ipc_server.send_command({
                 'type': 'execute_code',
@@ -410,6 +435,7 @@ class ReflexLayer:
     async def _handle_stuck(self, event: Dict[str, Any]):
         """Handle explicit stuck event."""
         logger.warning("Stuck reflex triggered!")
+        self._log_reflex('stuck', '反射层触发卡住逃生: 正在脱离卡住位置')
         await self._execute_with_coordinator(
             layer='unstuck',
             label='reflex:unstuck',
@@ -446,6 +472,7 @@ class ReflexLayer:
 
         if self.stuck_time > self.max_stuck_time:
             logger.warning(f"Stuck detected: {self.stuck_time:.1f}s in same location")
+            self._log_reflex('stuck', f"反射层自动检测到卡住: {self.stuck_time:.0f}秒未移动, 正在脱离")
             result = await self._execute_with_coordinator(
                 layer='unstuck',
                 label='mode:unstuck',

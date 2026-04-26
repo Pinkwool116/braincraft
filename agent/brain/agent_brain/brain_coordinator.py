@@ -186,6 +186,7 @@ class BrainCoordinator:
             exec_coordinator=self.exec_coordinator,
             ipc_server=self.ipc_server,
             config=config,
+            memory_manager=self.memory_manager,
         )
 
         # Register tools

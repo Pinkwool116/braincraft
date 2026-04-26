@@ -12,23 +12,50 @@
 
 ## 核心特性
 
-### 🎯 文本化任务管理 (Task.md)
-采用基于 `task.md` 的纯文件与文本管理策略：
-- **全局视野**: Agent Loop 在每次迭代时都会读取 `task.md` 来了解当前目标和进度。
-- **自由修改**: 拥有完全访问权，可根据游戏形势随时追加计划、调整优先级、跳过不可行步骤或增加补充信息（使用 `update_task` 工具）。
-- **无缝中断**: 利用 `interrupt` 工具可在紧急情况下切断当前正在执行的长耗时底层代码。
+### 🎯 三层文本化任务管理
+采用 `plan.md` + `todolist.md` + `draft.md` 三层文件架构，按时间尺度与抽象层次完全正交：
+
+| 层 | 文件 | 时间尺度 | 抽象层次 | 工具 |
+|---|---|---|---|---|
+| 宏观 | `plan.md` | 几天～整局 | 阶段目标、长期方向、背景约束、延后备忘 | `plan` |
+| 中观 | `todolist.md` | 几分钟～几小时 | 结构化待办，支持嵌套和 ID 寻址 | `todolist` |
+| 微观 | `draft.md` | 当前这一步 | 技术思路、失败尝试、给 Coding LLM 的提示 | `draft` |
+
+- **结构化 todolist**：支持 ID 编号（`t1` → `t1.2` → `t1.2.3`）和缩进双重保证嵌套；每条可精确寻址（`add / remove / set_status / move / overwrite`）。
+- **内容注入**：三个文件的内容由 `build_prompt()` 读取并注入提示词，工具仅负责任修改操作（无 `read` action）。
 
 ### 🛠️ 工具调用机制 (Tool Calling)
 将所有能力封装为可被模型识别的工具。目前支持：
 - `execute_step`: 生成与执行 JavaScript 脚本行动。
-- `update_task`: 更新目标清单与笔记文件。
+- `plan`: 写入/清空长期规划（plan.md）。
+- `todolist`: 结构化增删改短期待办（add / remove / update / set_status / move / overwrite）。
+- `draft`: 写入/清空当前步骤技术思路（draft.md）。
 - `chat`: 与玩家交流。
 - `recall_memory`: 从复杂的记忆图谱中检索信息。
-- `interrupt`: 打断当前行动，用于遇险或突发指令。
+- `interrupt_execution`: 打断当前行动，用于遇险或突发指令。
+- `wait`: 主动休眠等待 N 秒。
 
 ### 🧠 主动探索机制（Idle-Thinking）
 - 没有任务就主动探索。
 - 当系统处于无玩家任务的完全空闲 (Idle) 时，Agent 不会死板地挂起休息，而是依然拥有决策权，可以主动决定是散步探索、收集物资或主动找玩家交互。
+
+### 🧩 工作记忆系统 (Working Memory)
+所有关键信息自动写入短期记忆（线性缓冲区），定期滚动压缩（consolidate），任务阶段结束时蒸馏为长期记忆图谱（crystallize）。
+
+**写入的信息类型（entry_type）**：
+
+| entry_type | 来源 | 内容 |
+|---|---|---|
+| `reasoning` | Agent Loop 每轮决策 | LLM 的 thinking 全文（本轮决策的 WHY） |
+| `action` | Agent Loop 工具调用 | execute_step 执行结果、todolist 结构化修改、interrupt 等 |
+| `interaction` | 玩家消息 + Bot 发言 | `收到消息 [Player]: ...` 和 `发送消息: ...` |
+| `code_attempt` | Execution Layer 每次代码生成 | 分析（analysis）+ 代码 + 执行输出/错误（全量，不截断） |
+| `observation` | Reflex Layer 反射触发 | 战斗、低血逃生、着火、溺水、受伤、卡住脱困（30s debounce） |
+
+**关键设计**：
+- 反射事件视为环境信息：`observation` 条目是底层生存反射自动触发的，Agent 无法手动控制（系统提示词中明确说明）
+- `consolidate_interval = 20`：每 20 条原始条目触发一次 LLM 滚动压缩
+- 持久化：`bots/{name}/working_memory_raw.json` + `working_memory_summary.md`
 
 ### 🌟 灵活的提示词配置系统 (soul.md)
 引入 `soul.md` 作为机器人的内在人格配置：
@@ -40,24 +67,25 @@
 ```text
 ┌─────────────────────────────────────────────────────────┐
 │              Agent Loop Layer (主控循环层)               │
-│  • 读取世界态、内存、task.md 等                         │
+│  • 读取世界态、记忆、plan / todolist / draft            │
 │  • 驱动主决策 LLM 行动                                  │
-│  • 统一派发工具调用（Chat、Execute、Memory等）           │
-└──────────────┬───────────────────────────┬──────────────┘
-               │ 触发 execute_step          │ 读写 task.md
-               ↓                           │
+│  • 统一派发工具调用（plan、todolist、draft、chat 等）    │
+└──────────────┬──────────────────────────┬───────────────┘
+               │ 触发 execute_step         │ 读写 plan/draft/
+               ↓                           │ todolist 三文件
 ┌──────────────────────────────────────┐   │
 │           Execution Layer            │   │
 │  • 根据目标请求 Coding LLM 生成代码    │   │
 │  • 将 JS 送入 IPC 执行               │   │
-│  • 发生失败则局部请求重试             │   │
-└──────────────┬───────────────────────┘   │
-               │ JS 动作指令               │
-               ↓                           ↓
+│  • 读取 draft.md 获取决策层技术提示   │   │
+└──────────────┬──────────────────────┘   │
+               │ JS 动作指令              │
+               ↓                          ↓
 ┌─────────────────────────────────────────────────────────┐
 │               Reflex Layer (高频反射层)                  │
 │  • 生命垂危、燃烧、窒息的本能抢救                        │
 │  • 脱困(Stuck) 防护                                     │
+│  • 触发事件自动写入工作记忆（observation）               │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -230,8 +258,11 @@ BrainCraft 支持动态变量替换和模块化组织，提示词中可以使用
 - `$TIME_OF_DAY`: 游戏时间和天数。
 
 ### AI 状态与工具变量
-- `$TASK_FILE`: `task.md` 文件的实时文本内容。
+- `$PLAN_FILE`: `plan.md` 文件内容（长期宏观规划）。
+- `$TODOLIST_FILE`: `todolist.md` 结构化待办（含 ID 和嵌套）。
+- `$DRAFT_FILE`: `draft.md` 文件内容（当前步骤技术思路，同时注入给 Coding LLM）。
 - `$PENDING_CHAT`: 玩家发送且尚未处理的新消息。
+- `$CHAT_HISTORY`: 近期聊天记录。
 - `$TOOL_DESCRIPTIONS`: 目前可供 Agent Loop Layer 调用的所有工具文档和参数说明。
 - `$LAST_TOOL_RESULT`: 上一步工具执行的结果（成功/失败、代码输出或报错）。
 - `$SOUL`: `soul.md` 文件内加载的 Bot 深度人格设定或系统要求。
@@ -252,7 +283,14 @@ braincraft/
 │   │   │   ├── execution_layer.py   # 代码撰写与桥接执行
 │   │   │   └── reflex_layer.py      # 生理高频控制
 │   │   ├── tools/                # 所有对模型暴露的能力工具
-│   │   └── task_manager/         # 文件系统驱动的任务追踪 (task.md)
+│   │   │   ├── plan_tool.py      # 修改 plan.md
+│   │   │   ├── draft_tool.py     # 修改 draft.md
+│   │   │   └── todolist_tool.py  # 结构化增删改 todolist.md
+│   │   ├── task_manager/         # 文件系统驱动的三层任务管理
+│   │   │   ├── plan_manager.py   # plan.md 读写
+│   │   │   ├── draft_manager.py  # draft.md 读写
+│   │   │   ├── todolist_store.py # todolist.md 结构化解析/渲染/操作引擎
+│   │   │   └── chat_log_manager.py
 │   ├── bridge/                   # JS-Python IPC 桥接层
 │   └── prompts/                  # Prompt 核心体系
 │       ├── prompt_manager.py     # 模板渲染
@@ -263,9 +301,13 @@ braincraft/
 │           └── soul.md           # 人格属性动态配置
 ├── bots/                         # 机器人的持久化与记录资源
 │   └── BrainyBot/
-│       ├── task.md               # 机器人当前的行动计划提纲
+│       ├── plan.md               # 长期宏观规划
+│       ├── todolist.md           # 结构化短期待办（含 ID 和嵌套）
+│       ├── draft.md              # 当前步骤技术思路
 │       ├── prompts/              # 思路轨迹监控输出
-│       └── memory_*.json         # 记忆与聊天存档记录
+│       ├── working_memory_raw.json    # 工作记忆原始时间线
+│       ├── working_memory_summary.md  # 滚动压缩摘要
+│       └── memory_graph/         # 长期记忆图谱
 ├── profiles/                     # Bot 模型环境配置 (agent_brain.json 等)
 ├── keys.json                     # API密钥统筹
 └── settings.js                   # Node侧的连服务器端口设置

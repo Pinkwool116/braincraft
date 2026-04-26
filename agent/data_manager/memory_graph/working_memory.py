@@ -30,7 +30,7 @@ class WorkingMemoryBuffer:
     LLM 输出新的完整摘要全量替换旧摘要，已消费的原始条目随即移除。
     """
 
-    def __init__(self, agent_name: str, consolidate_interval: int = 5):
+    def __init__(self, agent_name: str, consolidate_interval: int = 20):
         self.agent_name = agent_name
         # 原始条目和压缩摘要分开存储
         from pathlib import Path
@@ -45,7 +45,7 @@ class WorkingMemoryBuffer:
         self.outcome: Optional[Dict[str, Any]] = None
         
         # 滚动压缩配置
-        self.consolidate_interval = max(3, consolidate_interval)
+        self.consolidate_interval = max(10, consolidate_interval)
         self._entries_since_last_consolidation = 0
         
         # 尝试从磁盘恢复（防崩溃丢失）

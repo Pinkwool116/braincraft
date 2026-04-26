@@ -129,36 +129,42 @@ class ExecutionLayer:
                 self.prompt_logger.update_response(prompt_file, response)
 
             if not response:
-                return {
+                ret = {
                     'success': False,
                     'code': '',
                     'output': '',
                     'error': 'LLM returned empty response',
                     'analysis': '',
                 }
+                self._log_code_attempt(step_description, ret)
+                return ret
 
             # 3. Parse LLM response (extract analysis and code)
             analysis, code = self._parse_coding_response(response)
 
             if not code:
-                return {
+                ret = {
                     'success': False,
                     'code': '',
                     'output': '',
                     'error': f'LLM did not generate code. Response: {response[:200]}',
                     'analysis': analysis,
                 }
+                self._log_code_attempt(step_description, ret)
+                return ret
 
             # 3.5. Validate generated code
             validation_error = self._validate_code(code)
             if validation_error:
-                return {
+                ret = {
                     'success': False,
                     'code': code,
                     'output': '',
                     'error': f'Code validation failed: {validation_error}',
                     'analysis': analysis,
                 }
+                self._log_code_attempt(step_description, ret)
+                return ret
 
             # 3.6. Inject interrupt checks (bot.interrupt_code after every statement)
             code = self._inject_interrupt_checks(code)
@@ -172,51 +178,61 @@ class ExecutionLayer:
             )
 
             if result.get('blocked'):
-                return {
+                ret = {
                     'success': False,
                     'code': code,
                     'output': '',
                     'error': 'Execution blocked by higher priority action',
                     'analysis': analysis,
                 }
+                self._log_code_attempt(step_description, ret)
+                return ret
 
             if result.get('cancelled'):
-                return {
+                ret = {
                     'success': False,
                     'code': code,
                     'output': '',
                     'error': 'Execution interrupted by higher priority action',
                     'analysis': analysis,
                 }
+                self._log_code_attempt(step_description, ret)
+                return ret
 
             # 5. Extract execution result
             exec_result = result.get('result', {})
-            return {
+            ret = {
                 'success': exec_result.get('success', False),
                 'code': code,
                 'output': exec_result.get('output', ''),
                 'error': exec_result.get('error', ''),
                 'analysis': analysis,
             }
+            self._log_code_attempt(step_description, ret)
+            return ret
 
         except asyncio.CancelledError:
             logger.warning("execute_step was cancelled")
-            return {
+            ret = {
                 'success': False,
                 'code': '',
                 'output': '',
                 'error': 'Execution cancelled',
                 'analysis': '',
             }
+            self._log_code_attempt(step_description, ret)
+            return ret
         except Exception as e:
             logger.error(f"execute_step error: {e}", exc_info=True)
-            return {
+            ret = {
                 'success': False,
                 'code': '',
                 'output': '',
                 'error': str(e),
                 'analysis': '',
             }
+            self._log_code_attempt(step_description, ret)
+            return ret
         finally:
             self.is_executing = False
             await self.shared_state.update('is_executing', False)
@@ -334,6 +350,26 @@ class ExecutionLayer:
             context=context,
             strict=False
         )
+
+    def _log_code_attempt(self, step_description: str, result: dict):
+        """Log a code generation + execution attempt to working memory."""
+        if not self.memory_manager:
+            return
+        try:
+            success = result.get('success', False)
+            self.memory_manager.log(
+                entry_type='code_attempt',
+                content=f"代码生成: {step_description}",
+                detail=(
+                    f"状态: {'成功' if success else '失败'}\n"
+                    f"分析: {result.get('analysis', '')}\n"
+                    f"代码: {result.get('code', '')}\n"
+                    + (f"输出: {result.get('output', '')}" if result.get('output') else '')
+                    + (f"错误: {result.get('error', '')}" if not success and result.get('error') else '')
+                ),
+            )
+        except Exception as e:
+            logger.debug(f"Failed to log code_attempt: {e}")
 
     async def _build_execution_context(self, step_description: str) -> str:
         """
