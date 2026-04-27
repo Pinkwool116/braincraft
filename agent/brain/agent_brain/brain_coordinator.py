@@ -164,11 +164,20 @@ class BrainCoordinator:
         # Memory router (working memory + long-term memory graph)
         enable_logging = config.get('enable_prompt_logging', True)
         embedding_config = config.get('embedding', None)
+        memory_config = config.get('memory', {})
+
+        # 游戏时间提供者：返回当前游戏天数（小数）
+        def _get_game_day():
+            state = self.shared_state._state
+            return state.get('world_day', 0) + state.get('world_time', 0) / 24000.0
+
         self.memory_manager = MemoryRouter(
             agent_name=config.get('agent_name', 'BrainyBot'),
             enable_logging=enable_logging,
             embedding_config=embedding_config,
             llm=self.memory_llm,
+            game_time_provider=_get_game_day,
+            memory_config=memory_config,
         )
         logger.info("MemoryRouter initialized")
 
@@ -449,6 +458,7 @@ class BrainCoordinator:
 
         self.brain_tasks.append(asyncio.create_task(self._run_agent_loop()))
         self.brain_tasks.append(asyncio.create_task(self._run_reflex()))
+        self.brain_tasks.append(asyncio.create_task(self._run_dream_monitor()))
         # Keep alive until shutdown
         try:
             while not self.shutdown_requested:
@@ -473,6 +483,27 @@ class BrainCoordinator:
             await asyncio.sleep(1)
         logger.info("Bot ready, starting Reflex Layer")
         await self.reflex_layer.run()
+
+    async def _run_dream_monitor(self):
+        """
+        Dream 定期检查协程。
+        等待 bot 就绪后，按配置的间隔检查 crystallize_count 是否达到触发阈值。
+        """
+        memory_config = self.config.get('memory', {})
+        initial_wait = memory_config.get("dream_check_initial_wait_seconds", 60)
+        poll_interval = memory_config.get("dream_check_interval_seconds", 300)
+
+        while not await self.shared_state.get('bot_ready'):
+            await asyncio.sleep(1)
+
+        await asyncio.sleep(initial_wait)
+        while not self.shutdown_requested:
+            try:
+                if self.memory_manager:
+                    await self.memory_manager.dream_if_needed(memory_config)
+            except Exception as e:
+                logger.warning(f"Dream monitor error: {e}")
+            await asyncio.sleep(poll_interval)
 
     async def cancel_all_tasks(self):
         """Cancel all running brain tasks"""

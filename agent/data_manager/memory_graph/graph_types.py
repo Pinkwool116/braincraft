@@ -14,33 +14,34 @@ class NodeType:
     """
     记忆图谱中的节点类型。
 
-    五种记忆不是图谱中的分区，而是检索视角：
-    - 语义记忆：从 pattern / item 出发
-    - 空间记忆：从 place 出发
-    - 情节记忆：从 episode / event / time_anchor 出发
-    - 社交记忆：从 agent 出发
-    - 自我画像：从 reflection 出发
-    """
-    EVENT = "event"              # 单个显著事件
-    EPISODE = "episode"          # 一段完整经历的概括
-    PLACE = "place"              # 地点、区域（带坐标）
-    AGENT = "agent"              # 人物/其他智能体
-    ITEM = "item"                # 重要物品
-    GOAL = "goal"                # 长期目标、愿望
-    PATTERN = "pattern"          # 可复用的经验规则、教训
-    EMOTION = "emotion"          # 情感
-    ATTITUDE = "attitude"        # 对人/事的态度
-    REFLECTION = "reflection"    # 自我认识、总结
-    TIME_ANCHOR = "time_anchor"  # 时间参照点（"第N天"等）
+    事实性记忆（Factual）：
+    - event: 在特定时间和地点发生的事情
+    - place: 具有坐标的空间位置
+    - person: 人物/玩家/智能体
+    - item: 物品/方块/实体
+    - time: 时间锚点
 
-    ALL = [
-        EVENT, EPISODE, PLACE, AGENT, ITEM, GOAL,
-        PATTERN, EMOTION, ATTITUDE, REFLECTION, TIME_ANCHOR,
-    ]
+    经验性记忆（Experiential，由事实归纳而来）：
+    - pattern: 可复用的经验规则
+    - thought: 想法/反思/自我认知
+
+    特殊类型：
+    - community: 聚类算法生成的抽象概念节点
+    """
+    EVENT = "event"
+    PLACE = "place"
+    PERSON = "person"
+    ITEM = "item"
+    TIME = "time"
+    PATTERN = "pattern"
+    THOUGHT = "thought"
+    COMMUNITY = "community"
+
+    ALL = [EVENT, PLACE, PERSON, ITEM, TIME, PATTERN, THOUGHT, COMMUNITY]
 
 
 class EdgeRelation:
-    """记忆图谱中的边关系类型。保持通用，不为特定场景设计。"""
+    """记忆图谱中的边关系类型。"""
     # 空间
     NEAR = "NEAR"
     LOCATED_AT = "LOCATED_AT"
@@ -62,11 +63,13 @@ class EdgeRelation:
     ASSOCIATED_WITH = "ASSOCIATED_WITH"
     # 社交
     KNOWS = "KNOWS"
-    FEELS_ABOUT = "FEELS_ABOUT"
     COOPERATED_WITH = "COOPERATED_WITH"
+    INTERACTED_WITH = "INTERACTED_WITH"
     # 类属
     IS_A = "IS_A"
     HAS_PROPERTY = "HAS_PROPERTY"
+    # 归纳
+    SUMMARIZED_FROM = "SUMMARIZED_FROM"
 
 
 @dataclass
@@ -78,15 +81,19 @@ class Node:
     type: str          # 节点类型，应为 NodeType 中的值
     content: str       # 核心文本内容或描述符
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     # 可选的ID分配，如果未提供则自动生成
     id: str = field(default_factory=lambda: f"node_{uuid.uuid4().hex[:8]}")
-    
+
     # 用于扩散激活模型的使用指标数据（记忆衰退与强化）
     access_count: int = 0
-    last_accessed: float = field(default_factory=time.time)
-    created_at: float = field(default_factory=time.time)
-    
+    last_accessed: float = field(default_factory=time.time)  # 现实时间，检索时效性
+    created_at: float = field(default_factory=time.time)     # 游戏世界天数
+
+    # 生命周期
+    invalid_at: Optional[float] = None      # 失效时的游戏天数，非 None 表示已失效
+    summarized_to: Optional[str] = None     # 被归纳到的目标节点 ID
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -95,9 +102,11 @@ class Node:
             "metadata": self.metadata,
             "access_count": self.access_count,
             "last_accessed": self.last_accessed,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "invalid_at": self.invalid_at,
+            "summarized_to": self.summarized_to,
         }
-        
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Node':
         return cls(**data)
@@ -110,20 +119,25 @@ class Edge:
     """
     source: str        # 源节点ID
     target: str        # 目标节点ID
-    relation: str      # 例如：'HAPPENED_AT'（发生在）, 'SERVES_GOAL'（服务于目标）, 'IS_A'（属于）
+    relation: str      # 例如：'HAPPENED_AT', 'LOCATED_AT', 'IS_A'
     weight: float = 1.0  # 连接的重要性/强度
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # 生命周期
+    created_at: float = field(default_factory=time.time)   # 游戏世界天数
+    invalid_at: Optional[float] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source,
             "target": self.target,
             "relation": self.relation,
             "weight": self.weight,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "created_at": self.created_at,
+            "invalid_at": self.invalid_at,
         }
-        
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Edge':
         return cls(**data)
-

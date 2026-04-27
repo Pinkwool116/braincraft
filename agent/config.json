@@ -31,7 +31,26 @@
     "memory": {
         "model": "deepseek_v4_flash_think",
         "consolidate_interval": 20,
-        "enable_crystallize": true
+        "enable_crystallize": true,
+
+        "dream_interval": 10,
+        "dream_min_nodes": 30,
+        "dream_check_initial_wait_seconds": 60,
+        "dream_check_interval_seconds": 300,
+        "community_min_size": 3,
+        "dedup_similarity_threshold": 0.9,
+        "dedup_edit_distance_threshold": 5,
+        "prune_access_threshold": 0,
+        "prune_age_days": 7,
+        "archive_age_days": 30,
+        "weak_edge_weight_threshold": 0.1,
+        "weak_edge_age_days": 3,
+
+        "retrieval_top_k": 8,
+        "retrieval_max_depth": 2,
+        "crystallize_context_top_k": 10,
+        "semantic_seed_top_k": 5,
+        "embedding_similarity_threshold": 0.3
     },
 
     "embedding": {

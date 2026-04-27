@@ -216,7 +216,7 @@ class EmbeddingProvider:
         self,
         query_texts: List[str],
         candidate_nodes: list,
-        top_k: int = 5,
+        top_k: int = 10,
         threshold: float = 0.3
     ) -> List[Tuple[object, float]]:
         """
@@ -253,6 +253,9 @@ class EmbeddingProvider:
         # 计算相似度
         scored = []
         for node in candidate_nodes:
+            # 跳过失效节点
+            if getattr(node, 'invalid_at', None) is not None:
+                continue
             vec = self._cache.get(node.id)
             if vec:
                 sim = cosine_similarity(avg_query, vec)
