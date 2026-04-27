@@ -233,11 +233,8 @@ class GraphDream:
         for c in plan.get("prune_nodes", []):
             nid = self._find_id(c) if isinstance(c, str) else c
             if nid and self.engine.nx_graph.has_node(nid):
-                node = self.engine.get_node(nid)
-                safe_types = ("community", "pattern")
-                if node and node.type not in safe_types:
-                    self.engine.remove_node_permanently(nid)
-                    logger.info(f"Dream pruned node: {c if isinstance(c, str) else nid}")
+                self.engine.remove_node_permanently(nid)
+                logger.info(f"Dream pruned node: {c if isinstance(c, str) else nid}")
 
         # 剪枝边
         for e in plan.get("prune_edges", []):

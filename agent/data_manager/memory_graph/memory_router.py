@@ -250,19 +250,19 @@ class MemoryRouter:
         """
         if not self.llm:
             logger.warning("未配置 memory LLM，跳过 crystallize")
-            return
+            raise NotImplementedError("Memory LLM is required for crystallize")
         if not self.working_memory.has_content:
             logger.debug("工作记忆为空，跳过 crystallize")
             return
 
         if not self.extraction_prompt_template:
             logger.error("缺少提示词模板，跳过 crystallize")
-            return
+            raise NotImplementedError("Extraction prompt template is required for crystallize")
 
         async with self._write_lock:
             buffer_text = self.working_memory.get_buffer_text()
 
-            existing_context = self._get_existing_context_for_reflection()
+            existing_context = await self._get_existing_context_for_reflection()
 
             prompt = self.extraction_prompt_template.replace("{buffer_text}", buffer_text)
             prompt = prompt.replace("{existing_context}", existing_context)
@@ -302,7 +302,7 @@ class MemoryRouter:
             self.working_memory.clear()
             self.crystallize_count += 1
 
-    def _get_existing_context_for_reflection(self) -> str:
+    async def _get_existing_context_for_reflection(self) -> str:
         """
         语义搜索 + 扩散激活获取已有图谱中的相关上下文。
 
@@ -323,31 +323,16 @@ class MemoryRouter:
 
         # 1. 语义匹配种子节点
         if self.embedding.enabled:
-            async def _semantic():
+            try:
                 results = await self.embedding.find_similar_nodes(
                     query_texts=[buffer_text[:2000]],
                     candidate_nodes=all_nodes,
                     top_k=self._cfg.get("crystallize_context_top_k", 10),
                     threshold=self._cfg.get("embedding_similarity_threshold", 0.3)
                 )
-                return [node.id for node, _ in results]
-
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                future = asyncio.run_coroutine_threadsafe(_semantic(), loop)
-                try:
-                    seed_ids.update(future.result(timeout=10))
-                except Exception:
-                    pass
-            else:
-                try:
-                    seed_ids.update(asyncio.run(_semantic()))
-                except Exception:
-                    pass
+                seed_ids.update(node.id for node, _ in results)
+            except Exception:
+                pass
 
         # 2. 降级：用任务目标做子串匹配
         if not seed_ids:
@@ -531,105 +516,11 @@ class MemoryRouter:
 
     # ==================== 检索（长期记忆 → 提示词注入） ====================
 
-    def retrieve_context(self, trigger_texts: List[str] = None, top_k: int = 8) -> str:
+    async def retrieve_context_async(self, trigger_texts: List[str] = None, top_k: int = 8) -> str:
         """
         检索相关记忆上下文，格式化为可注入提示词的文本。
 
-        种子节点选择策略：
-        1. 若 embedding 可用 → 语义相似度匹配种子节点
-        2. 降级 → 精确子串匹配
-        3. 再降级 → 最近的 event
-        然后用扩散激活从种子展开。
-        """
-        active_node_ids = []
-
-        all_nodes = self.engine.get_all_nodes()
-
-        if trigger_texts and all_nodes:
-            # 优先使用语义匹配
-            if self.embedding.enabled:
-                active_node_ids = self._semantic_seed_selection(
-                    trigger_texts, top_k=self._cfg.get("semantic_seed_top_k", 5))
-
-            # 降级：精确子串匹配
-            if not active_node_ids:
-                for node in all_nodes:
-                    if any(t.lower() in node.content.lower() for t in trigger_texts if len(t) > 2):
-                        active_node_ids.append(node.id)
-
-        if not active_node_ids:
-            # 再降级：取最近的 event 作为扩散源
-            events = [n for n in all_nodes if n.type == NodeType.EVENT]
-            fallback = sorted(events, key=lambda n: n.created_at, reverse=True)[:2]
-            active_node_ids = [n.id for n in fallback]
-
-        if not active_node_ids:
-            return "无相关记忆记录。"
-
-        relevant_nodes = self.retriever.spread_activation(
-            start_node_ids=active_node_ids,
-            max_depth=self._cfg.get("retrieval_max_depth", 2),
-            top_k=top_k
-        )
-
-        # 格式化为可注入提示词的文本
-        lines = ["=== 相关联的记忆图谱切片 ==="]
-        for node in relevant_nodes:
-            edges = list(self.engine.nx_graph.out_edges(node.id, data=True))
-            valid_edges = [(s, t, d) for s, t, d in edges if d.get('invalid_at') is None]
-            if valid_edges:
-                for src, tgt, data in valid_edges[:3]:
-                    target_node = self.engine.get_node(tgt)
-                    if target_node and getattr(target_node, 'invalid_at', None) is None:
-                        lines.append(
-                            f"[{node.type.upper()}] {node.content} "
-                            f"--({data['relation']})--> "
-                            f"[{target_node.type.upper()}] {target_node.content}"
-                        )
-            else:
-                lines.append(f"[{node.type.upper()}] {node.content}")
-
-        return "\n".join(lines)
-
-    def _semantic_seed_selection(self, trigger_texts: List[str], top_k: int = 5) -> List[str]:
-        """
-        使用 embedding 语义相似度选择种子节点。
-
-        同步包装异步 embedding 调用。若已在 async 上下文中
-        则返回空（调用方应使用 retrieve_context_async 代替）。
-        """
-        all_nodes = self.engine.get_all_nodes()
-        if not all_nodes:
-            return []
-
-        async def _do_search():
-            results = await self.embedding.find_similar_nodes(
-                query_texts=trigger_texts,
-                candidate_nodes=all_nodes,
-                top_k=top_k,
-                threshold=self._cfg.get("embedding_similarity_threshold", 0.3)
-            )
-            return [node.id for node, _ in results]
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            logger.debug("_semantic_seed_selection: 在 async 上下文中，降级到子串匹配")
-            return []
-        else:
-            try:
-                return asyncio.run(_do_search())
-            except Exception as e:
-                logger.warning(f"语义种子选择失败: {e}")
-                return []
-
-    async def retrieve_context_async(self, trigger_texts: List[str] = None, top_k: int = 8) -> str:
-        """
-        retrieve_context 的异步版本。在 async 上下文中优先使用此方法，
-        可以正确 await embedding API 调用。
+        种子选择：语义匹配 + 子串匹联合并后扩散激活。
         """
         all_nodes = self.engine.get_all_nodes()
         seed_ids = set()
@@ -645,11 +536,10 @@ class MemoryRouter:
                 )
                 seed_ids.update(node.id for node, _ in results)
 
-            # 子串匹配（与语义结果合并）
-            if not seed_ids:
-                for node in all_nodes:
-                    if any(t.lower() in node.content.lower() for t in trigger_texts if len(t) > 2):
-                        seed_ids.add(node.id)
+            # 子串匹配（与语义结果合并，覆盖语义遗漏的精确匹配）
+            for node in all_nodes:
+                if any(t.lower() in node.content.lower() for t in trigger_texts if len(t) > 2):
+                    seed_ids.add(node.id)
 
         if not seed_ids:
             events = [n for n in all_nodes if n.type == NodeType.EVENT]
