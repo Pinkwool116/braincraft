@@ -285,14 +285,16 @@ class DataProviders:
         """
         获取工作记忆缓冲区内容（当前任务的原始体验）。
         Maps to $WORKING_MEMORY variable.
+        include_skeleton=True 确保 crystallize 后的骨架摘要对 Agent 可见。
         """
         memory_manager = context.get('memory_manager')
         if not memory_manager or not hasattr(memory_manager, 'working_memory'):
             return "无工作记忆。"
         buffer = memory_manager.working_memory
-        if not buffer.has_content:
+        text = buffer.get_buffer_text(include_skeleton=True)
+        if not text or text == "（暂无工作记忆）":
             return "无工作记忆。"
-        return buffer.get_buffer_text()
+        return text
 
     @staticmethod
     async def get_long_term_memory(context: Dict[str, Any]) -> str:

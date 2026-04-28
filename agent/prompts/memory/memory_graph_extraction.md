@@ -32,8 +32,9 @@
   - 好: content="白桦原木(birch_log)", metadata={"count": 6}
   - 差: content="木材"
 
-- **time**（时间锚点）：世界第几天、游戏阶段等。
-  - 好: content="第5天", metadata={"world_day": 5}
+- **time**（时间锚点）：世界第几天（显示名从 1 开始计数）、游戏阶段等。**world_day 使用 Minecraft 原始值（从 0 开始）**。
+  - 好: content="第1天", metadata={"world_day": 0}（Minecraft 第 0 天 = 显示第 1 天）
+  - 好: content="第5天", metadata={"world_day": 4}
 
 - **pattern**（经验规则）：必须是可操作的具体规则，而非笼统的感悟。应当包含具体的Minecraft API调用或代码模式。
   - 好: "平原(plains)生物群系树木稀少且无橡树，应优先前往森林(forest)或针叶林(taiga)生物群系采集大量木材"
@@ -101,6 +102,13 @@
 - 多次尝试同一操作失败 → 归纳为一条关于"什么情况下不应该使用某个方法"的 pattern
 
 源节点会被标记为"已被归纳"并创建 SUMMARIZED_FROM 边，但不会被删除。
+
+### pattern 和 thought 节点的边要求
+
+**必须**为每个新创建的 `pattern` 或 `thought` 节点创建至少一条 `LEARNED_FROM` 边，指向触发该规律或反思的源事件节点。没有源事件的 pattern/thought 没有事实依据，不应被创建。
+
+示例：
+- 边: {"source": "在森林生物群系地表通常没有石头暴露，应寻找矿洞入口或向下挖掘", "target": "探索森林地形寻找石头", "relation": "LEARNED_FROM"}
 
 ## 输出格式
 

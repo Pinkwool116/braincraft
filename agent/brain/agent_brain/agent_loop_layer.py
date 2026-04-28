@@ -676,9 +676,22 @@ class AgentLoopLayer:
         1. All top-level todolist items are done
         2. plan(action='write') wrote a new phase goal
         3. todolist(action='overwrite') was executed (major refactor)
+
+        All triggers require a minimum number of working memory entries
+        to avoid crystallizing on trivial content (e.g. the very first plan write).
         """
         if not self.memory_manager:
             return
+
+        # Guard: require meaningful content before crystallizing
+        wm = self.memory_manager.working_memory
+        if len(wm.timeline) < 7:
+            return
+
+        # Guard: require sufficient consolidations to ensure enough context
+        if self.memory_manager.consolidate_count_since_crystallize <= 10:
+            return
+
         tool_name = tool_call.get('tool')
         tool_args = tool_call.get('tool_args', {})
 

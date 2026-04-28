@@ -54,7 +54,7 @@
 
 **关键设计**：
 - 反射事件视为环境信息：`observation` 条目是底层生存反射自动触发的，Agent 无法手动控制（系统提示词中明确说明）
-- `consolidate_interval = 20`：每 20 条原始条目触发一次 LLM 滚动压缩
+- `consolidate_interval = 30`：每 30 条原始条目触发一次 LLM 滚动压缩
 - 持久化：`bots/{name}/working_memory_raw.json` + `working_memory_summary.md`
 
 ### 🌟 灵活的提示词配置系统 (soul.md)

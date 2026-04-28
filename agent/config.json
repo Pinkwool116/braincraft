@@ -30,7 +30,7 @@
 
     "memory": {
         "model": "deepseek_v4_flash_think",
-        "consolidate_interval": 20,
+        "consolidate_interval": 25,
         "enable_crystallize": true,
 
         "dream_interval": 10,

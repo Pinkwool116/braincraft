@@ -30,7 +30,7 @@ class WorkingMemoryBuffer:
     LLM 输出新的完整摘要全量替换旧摘要，已消费的原始条目随即移除。
     """
 
-    def __init__(self, agent_name: str, consolidate_interval: int = 20):
+    def __init__(self, agent_name: str, consolidate_interval: int = 30):
         self.agent_name = agent_name
         # 原始条目和压缩摘要分开存储
         from pathlib import Path
@@ -42,10 +42,12 @@ class WorkingMemoryBuffer:
         self.context: Dict[str, Any] = {}
         self.timeline: List[Dict[str, Any]] = []  # 仅原始条目
         self.consolidated_summary: str = ""  # 滚动压缩的完整摘要（独立存储）
+        self.skeleton_summary: str = ""  # crystallize 后保留的骨架上下文，仅供 Agent 提示词使用
+        self.consolidate_count_since_crystallize: int = 0  # 跨任务持久化的 crystallize 门槛计数器
         self.outcome: Optional[Dict[str, Any]] = None
         
         # 滚动压缩配置
-        self.consolidate_interval = max(10, consolidate_interval)
+        self.consolidate_interval = max(20, consolidate_interval)
         self._entries_since_last_consolidation = 0
         
         # 尝试从磁盘恢复（防崩溃丢失）
@@ -96,10 +98,11 @@ class WorkingMemoryBuffer:
         self._save()
 
     def clear(self):
-        """反思（crystallize）完成后清空缓冲区。"""
+        """crystallize 完成后清空缓冲区，但保留摘要和最近上下文。"""
         self.context = {}
-        self.timeline = []
-        self.consolidated_summary = ""
+        # 保留最后 5 条 timeline 提供连续性上下文
+        self.timeline = self.timeline[-5:] if len(self.timeline) > 5 else self.timeline
+        # consolidated_summary 保留不重置——它是滚动压缩的累积产物
         self.outcome = None
         self._save()
 
@@ -253,12 +256,18 @@ class WorkingMemoryBuffer:
         """缓冲区是否有可供反思的内容。"""
         return bool(self.timeline)
 
-    def get_buffer_text(self) -> str:
+    def get_buffer_text(self, include_skeleton: bool = False) -> str:
         """
         将工作记忆格式化为可嵌入系统提示词的文本。
         使用轻量标记（无 ## 标题）避免在提示词中产生多余的标题层级。
+
+        Args:
+            include_skeleton: 若为 True，当无 timeline 和摘要时，返回骨架摘要。
+                             仅 Agent 提示词使用；crystallize 调用时传 False。
         """
         if not self.timeline and not self.consolidated_summary:
+            if include_skeleton and self.skeleton_summary:
+                return f"▸ 近期概要\n{self.skeleton_summary}"
             return "（暂无工作记忆）"
 
         lines = []
@@ -280,6 +289,12 @@ class WorkingMemoryBuffer:
             lines.append("")
             lines.append("▸ 经历摘要")
             lines.append(self.consolidated_summary)
+
+        # 骨架摘要（crystallize 后保留的上下文，仅 Agent 提示词可见）
+        if include_skeleton and self.skeleton_summary and not self.consolidated_summary:
+            lines.append("")
+            lines.append("▸ 近期概要")
+            lines.append(self.skeleton_summary)
 
         # 尚未压缩的原始条目（最多显示最新 20 条，避免过长）
         if self.timeline:
@@ -333,7 +348,7 @@ class WorkingMemoryBuffer:
         if snapshot.get("time_label"):
             parts.append(f"时间:{snapshot['time_label']}")
         if snapshot.get("world_day") is not None:
-            parts.append(f"第{snapshot['world_day']}天")
+            parts.append(f"第{snapshot['world_day'] + 1}天")
         if snapshot.get("weather"):
             parts.append(f"天气:{snapshot['weather']}")
         if snapshot.get("dimension"):
@@ -373,6 +388,8 @@ class WorkingMemoryBuffer:
                 "timeline": self.timeline,
                 "outcome": self.outcome,
                 "entries_since_last_consolidation": self._entries_since_last_consolidation,
+                "skeleton_summary": self.skeleton_summary,
+                "consolidate_count_since_crystallize": self.consolidate_count_since_crystallize,
             }
             with open(self._raw_path, "w", encoding="utf-8") as f:
                 json.dump(raw_data, f, indent=2, ensure_ascii=False)
@@ -392,6 +409,8 @@ class WorkingMemoryBuffer:
                 self.timeline = data.get("timeline", [])
                 self.outcome = data.get("outcome")
                 self._entries_since_last_consolidation = data.get("entries_since_last_consolidation", 0)
+                self.skeleton_summary = data.get("skeleton_summary", "")
+                self.consolidate_count_since_crystallize = data.get("consolidate_count_since_crystallize", 0)
             except Exception as e:
                 logger.warning(f"工作记忆原始数据加载失败，将重新开始: {e}")
             

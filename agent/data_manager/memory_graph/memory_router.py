@@ -48,7 +48,8 @@ class MemoryRouter:
         self.embedding = EmbeddingProvider(agent_name, embedding_config)
 
         # 工作记忆缓冲区
-        self.working_memory = WorkingMemoryBuffer(agent_name)
+        consolidate_interval = self._cfg.get('consolidate_interval', 30)
+        self.working_memory = WorkingMemoryBuffer(agent_name, consolidate_interval=consolidate_interval)
 
         # 记忆操作专用 LLM（压缩 + 反思蒸馏）
         self.llm = llm
@@ -159,6 +160,11 @@ class MemoryRouter:
         """
         self.working_memory.end_task(result, summary)
 
+    @property
+    def consolidate_count_since_crystallize(self) -> int:
+        """自上次 crystallize 以来的 consolidate 次数（跨任务持久化）。"""
+        return self.working_memory.consolidate_count_since_crystallize
+
     def should_consolidate(self) -> bool:
         """检查工作记忆是否需要滚动压缩。"""
         return self.working_memory.should_consolidate()
@@ -213,6 +219,7 @@ class MemoryRouter:
             new_summary = response.strip()
             if new_summary:
                 self.working_memory.update_summary(new_summary, consumed_entries=new_entries)
+                self.working_memory.consolidate_count_since_crystallize += 1
                 logger.info(f"工作记忆滚动压缩完成：{len(new_entries)} 条新条目已融入摘要")
             else:
                 logger.warning("consolidate: LLM 返回空摘要")
@@ -298,8 +305,14 @@ class MemoryRouter:
                 logger.error(f"crystallize 失败: {e}", exc_info=True)
                 return  # 失败时不清空工作记忆，下次可以重试
 
-            # 成功后清空工作记忆并递增计数器
+            # 生成骨架摘要（仅供 Agent 上下文，不参与后续 consolidate/crystallize）
+            new_nodes = new_node_ids if 'new_node_ids' in locals() else []
+            skeleton = self._build_skeleton_summary(new_nodes)
+            self.working_memory.skeleton_summary = skeleton
+
+            # 清空工作记忆（保留摘要和骨架），重置计数器
             self.working_memory.clear()
+            self.working_memory.consolidate_count_since_crystallize = 0
             self.crystallize_count += 1
 
     async def _get_existing_context_for_reflection(self) -> str:
@@ -418,6 +431,7 @@ class MemoryRouter:
                 if target_node and getattr(target_node, 'invalid_at', None) is None:
                     content_to_id[content] = n_id
                     target_node.access_count += 1
+                    self._merge_metadata(target_node, n.get("metadata", {}))
                     continue
 
             # 按 content + type 去重
@@ -427,6 +441,7 @@ class MemoryRouter:
                 target_node = existing[0]
                 content_to_id[content] = target_node.id
                 target_node.access_count += 1
+                self._merge_metadata(target_node, n.get("metadata", {}))
             else:
                 metadata = n.get("metadata", {})
                 new_node = self.engine.add_node(n_type, content, metadata)
@@ -676,6 +691,32 @@ class MemoryRouter:
             })
 
         logger.info("=== Dream cycle completed ===")
+
+    # ==================== 骨架摘要 ====================
+
+    def _build_skeleton_summary(self, new_node_ids: List[str]) -> str:
+        """从新结晶的节点生成骨架摘要，仅用于 Agent 上下文。"""
+        if not new_node_ids:
+            return ""
+        new_nodes = [self.engine.get_node(nid) for nid in new_node_ids if self.engine.get_node(nid)]
+        if not new_nodes:
+            return ""
+        events = [n for n in new_nodes if n.type == NodeType.EVENT]
+        if not events:
+            return ""
+        event_names = [e.content for e in events[:5]]
+        return "已结晶的关键经历：" + " → ".join(event_names)
+
+    @staticmethod
+    def _merge_metadata(node, new_metadata: dict):
+        """合并 metadata，保护坐标字段不被 LLM 覆盖。"""
+        if not new_metadata:
+            return
+        protected_keys = {'coordinates', 'position'}
+        for key in protected_keys:
+            new_metadata.pop(key, None)
+        if hasattr(node, 'metadata') and node.metadata is not None:
+            node.metadata.update(new_metadata)
 
     # ==================== 兼容性：保留旧接口 ====================
 

@@ -1,5 +1,5 @@
 """
-Todolist Tool v2
+Todolist Tool
 
 Structured todolist tool with 6 actions:
 add / remove / update / set_status / move / overwrite
@@ -14,9 +14,9 @@ from typing import Dict, Any
 logger = logging.getLogger(__name__)
 
 
-class TodolistToolV2:
+class TodolistTool:
     """
-    Tool: todolist (v2 — structured)
+    Tool: todolist
 
     Manage your current short-term todos with structured operations.
     Daily operations (80%): add / set_status / update / remove
@@ -67,7 +67,7 @@ class TodolistToolV2:
         except ValueError as e:
             return {'success': False, 'error': str(e)}
         except Exception as e:
-            logger.error(f"TodolistToolV2 error: {e}")
+            logger.error(f"TodolistTool error: {e}")
             return {'success': False, 'error': str(e)}
 
     async def _handle_add(self, args: dict) -> dict:
