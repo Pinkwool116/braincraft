@@ -110,7 +110,7 @@ class WorkingMemoryBuffer:
 
     def append(self, entry_type: str, content: str, detail: str = None,
                game_state: Dict[str, Any] = None, metadata: Dict[str, Any] = None,
-               preserve: bool = False):
+               preserve: bool = False, consolidate_weight: int = 1):
         """
         向时间线追加一条记录。
 
@@ -122,6 +122,10 @@ class WorkingMemoryBuffer:
             game_state: 可选的当前游戏状态快照，用于丰富记忆上下文
             metadata: 可选的结构化补充数据（如LLM推理、关键代码调用等）
             preserve: 若为True，该条目在滚动压缩时不会被压缩，原封保留
+            consolidate_weight: 计入 consolidate 触发的权重。
+                1 = 正常计数（action, reasoning 等）
+                0 = 不计数（observation — 由 EventTicker/TerrainAnalyzer 写入，
+                    不应因为"周围路过几只羊"就触发记忆压缩）
         """
         entry = {
             "id": uuid.uuid4().hex,
@@ -137,9 +141,9 @@ class WorkingMemoryBuffer:
             entry["metadata"] = metadata
         if preserve:
             entry["preserve"] = True
-        
+
         self.timeline.append(entry)
-        self._entries_since_last_consolidation += 1
+        self._entries_since_last_consolidation += consolidate_weight
         self._save()
 
     @staticmethod

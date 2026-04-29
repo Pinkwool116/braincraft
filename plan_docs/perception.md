@@ -22,7 +22,7 @@
           ▼                ▼                ▼
    ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
    │ 被动事件监听  │ │ 主动地形扫描  │ │ 状态快照采集  │
-   │ (事件驱动)    │ │ (定时触发)    │ │ (周期性)      │
+   │ (事件驱动)    │ │ (定时触发)    │ │ (每1秒)       │
    └──────────────┘ └──────────────┘ └──────────────┘
           │                │                │
           └────────────────┼────────────────┘
@@ -30,26 +30,36 @@
                            ▼
                   ┌────────────────┐
                   │  原始感知缓冲区  │  ← 高频、大容量、原始数据
-                  └────────────────┘
-                           │
-                           ▼
-                  ┌────────────────┐
-                  │ Perception      │  ← Flash LLM（低延迟、低成本）
-                  │ Summarizer     │     纯观测：去噪 → 聚合 → 结构化
-                  └────────────────┘
-                           │
-                    ┌──────┴──────┐
-                    ▼              ▼
-           ┌────────────┐  ┌────────────┐
-           │ 环境摘要    │  │ 显著事件    │
-           │ → 主LLM注入 │  │ → 工作记忆  │
-           └────────────┘  └────────────┘
+                  └───────┬────────┘
+                          │
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+   ┌──────────────┐               ┌──────────────┐
+   │ EventTicker   │               │ Terrain       │
+   │ 纯代码聚合     │               │ Analyzer      │
+   │ 每 2 秒       │               │ Flash LLM     │
+   │               │               │ 每 30 秒      │
+   └───────┬───────┘               └───────┬───────┘
+           │                               │
+           └───────────┬───────────────────┘
+                       │
+                       ▼
+              ┌────────────────┐
+              │  WorkingMemory  │  ← observation 条目（不计入 consolidate 配额）
+              │  → $WORKING_MEMORY 自然可见          │
+              └────────────────┘
 ```
 
 **三层感知，互不阻塞**：
 - **被动事件监听**：Mineflayer 事件驱动，JS 端持续运行，不受 Python Agent Loop 状态影响
-- **主动地形扫描**：独立感知 Worker，定期执行，不受代码执行阻塞
-- **Perception Summarizer**：独立 Flash LLM 调用，不占用主 LLM 的上下文窗口
+- **主动地形扫描**：独立感知 Worker，三级定时器（5s/30s/60s），不受代码执行阻塞
+- **EventTicker**：纯代码聚合，无 LLM 调用，轻量到可以每 2 秒运行一次
+- **TerrainAnalyzer**：Flash LLM 仅用于地形理解，低频调用（每 30 秒），不占用主 LLM 上下文
+
+**核心设计决策：不用 LLM 总结事件，也不用单独的 prompt 注入变量**：
+- 离散事件（实体、声音、方块变化）→ EventTicker 纯代码结构化 → WorkingMemory
+- 空间理解（地形、结构）→ TerrainAnalyzer Flash LLM → WorkingMemory
+- Agent Loop 通过 `$WORKING_MEMORY` 自然读取所有 observation，无需 `$ENV_SUMMARY`
 
 ---
 
@@ -88,7 +98,7 @@
 对每个水平方向（每 22.5° 一个采样，共 16 个方向）：
   对每个俯仰角（-45° 看下方, 0° 平视, +30° 看上方）：
     bot.look(yaw, pitch)
-    block = bot.blockAtCursor(64)  ← 64 格射线
+    block = bot.blockAtCursor(128)  ← 128 格射线
     记录：(yaw, pitch, 命中方块名, 距离, 坐标, 光照)
 ```
 
@@ -160,61 +170,108 @@
 
 ---
 
-## 四、感知数据处理层 —— Flash LLM 总结
+## 四、感知数据处理层
 
-### 4.1 为什么需要独立总结
+### 4.1 为什么要分层处理
 
-原始感知数据量巨大且噪声多：
-- 每 10 秒可能产生 50+ 个原始事件（方块变化、实体移动、声音...）
-- 大部分是「草方块旁边还是草方块」这类无用信息
-- 直接全量注入主 LLM 会填满上下文窗口，且与记忆混淆
+原始感知数据有两个截然不同的处理需求：
 
-### 4.2 Flash Summarizer 设计
+| 需求 | 特点 | 适合方案 |
+|------|------|---------|
+| 离散事件聚合 | 结构化、高频、噪声多、需要去重 | **纯代码**——规则明确，无需 LLM |
+| 空间地形理解 | 非结构化、需要语义推理、低频 | **Flash LLM**——需要"看懂"空间结构 |
+
+把两者塞给同一个 LLM 是浪费：事件聚合（"3 个骷髅从东边靠近"）用几十行代码就能做好；地形理解（"你站在山丘上，西侧是峡谷，前方有橡树林"）才需要 LLM 的语义能力。
+
+### 4.2 EventTicker — 结构化事件聚合（纯代码，每 2 秒）
+
+**先说清楚"变化"是什么意思**：
+
+感知 Worker（JS 端）的 Mineflayer 事件监听器是**持续运行**的——`entitySpawn`、`blockUpdate`、`soundEffectHeard` 等事件在游戏里发生的瞬间就被 JS 端捕获，实时推入 PerceptionBuffer。这**不是**"每 2 秒看一眼周围然后和上次对比"，而是**事件驱动的连续流**。
+
+- 一只羊走进视野 → 服务端触发 `entitySpawn` → JS 立刻收到 → 推入缓冲区
+- Agent 挖掉一块橡木 → 服务端触发 `blockUpdate(air→air)` → JS 立刻收到 → 推入缓冲区
+- 僵尸在 15 格外叫了一声 → 服务端触发 `soundEffectHeard` → JS 立刻收到 → 推入缓冲区
+
+2 秒只是 EventTicker 的**消费节奏**——每 2 秒从缓冲区取出这段时间积累的所有事件，聚合为一条 observation 写入 WorkingMemory。如果 2 秒内没有任何值得记录的事件，不写入。
+
+**输入**：原始感知缓冲区中自上次消费后累积的所有事件（entity_spawn, entity_gone, entity_approaching, sound_heard, block_update, weather_change, quick_scan 等）
+
+**处理规则**（纯代码，无 LLM）：
 
 ```
-原始感知缓冲区（累积 N 秒或 N 条事件）
-       │
-       ▼
-┌─────────────────────────┐
-│  Perception Summarizer   │  ← Flash LLM（低延迟、低成本）
-│                         │
-│  输入：原始事件流 + 上次摘要
-│  输出：结构化环境摘要
-└─────────────────────────┘
-       │
-       ├──→ 「环境摘要」→ 注入主 LLM 的 $ENV_SUMMARY 占位符
-       ├──→ 「显著事件」→ 写入 WorkingMemory (type=observation)
-       └──→ 「异常标记」→ 写入 WorkingMemory (type=discovery)
+1. 新实体出现：点名 + 方向 + 大致距离（最多列出 5 个）
+2. 敌对实体靠近（8 格内且正在缩短距离）：点名 + 距离 + "靠近中"（全部列出）
+3. 实体消失：点名（仅记录之前出现过的）
+4. 声音事件：去重点名 + 大致方向距离（最多 5 个，过滤音量 < 0.3 的弱声）
+5. 天气变化：只记录变化发生的时刻（开始下雨/雨停/雷暴）
+6. 重要方块变化：仅记录矿石暴露、液体流动、爆炸破坏、TNT 点燃
+   （包含 Agent 自身操作导致的变化——这是任务执行反馈的一部分）
+7. 普通方块变化（草地、石头、木头等）如果在 Agent 附近且集中发生（> 5 次/5s），
+   聚合为一句话描述（如「西南方向有大量方块变化」），否则忽略
 ```
 
-**Flash LLM 的职责**：
+**输出**：一条 `observation` 条目，直接写入 WorkingMemory。例如：
 
-1. **去噪**：剔除平凡事件——「草方块旁边还是草方块」、同一个实体反复移动一像素等。Flash 不需要知道 Agent 的任务是什么，只需判断事件本身是否值得关注
-2. **聚合**：将离散事件提炼为自然语言描述
-   - 输入：`blockUpdate: grass→dirt` × 30 次 + `entitySpawn: sheep` × 5
-   - 输出：「西南方向有一群羊（约 5 只）在草地上活动」
-3. **趋势识别**：检测随时间的变化模式
-   - 「天色逐渐变暗」
-   - 「一名玩家（Steve）正在靠近，已从 20 格缩短到 10 格」
-4. **异常标记**：发现客观上不寻常的事件
-   - 「脚下 3 格处发现钻石矿！」
-   - 「后方突然出现苦力怕，距离仅 4 格！」
-   - 「听到 TNT 点燃的声音，来源在东南方向 10 格处」
+```
+[感知 12:03:05] 新实体: 骷髅(东8格), 僵尸(北6格靠近中), 玩家Steve(南15格) | 实体消失: 羊×3 | 声音: 骷髅咯咯声(东8格), 僵尸低吼(北6格) | 天气: 开始下雨
+```
 
-**设计原则**：Flash **不需要知道 Agent 当前在做什么任务**。它只负责回答一个问题——「这段时间世界里发生了什么值得注意的事情？」——然后输出结构化的环境摘要。摘要是否有用、和任务是否相关，由 Agent Loop 的主 LLM 自己判断。
+如果 5 秒内没有任何值得记录的事件，**不写入任何内容**（大部分时间确实是空的）。
 
-**触发频率分级**：
+**为什么不需要 LLM**：以上 7 条规则覆盖了所有离散事件的聚合需求。事件的"重要性"由客观标准决定（距离、类型、频率），不依赖对 Agent 任务的理解。去重和聚合是纯逻辑操作。
 
-| 场景 | 总结频率 | 原因 |
-|------|---------|------|
-| 空闲/漫游 | 每 15-30 秒 | 环境变化慢，无需高频总结 |
-| 代码执行中 | 每 5-10 秒 | 执行期间环境仍在变化，需要持续记录 |
-| 战斗中 | 不触发 Flash | 战斗由 Reflex Layer 全权处理，毫秒级反应；战斗结果事后写入 WorkingMemory |
-| 与玩家对话 | 按需 | 对话中提及环境时触发 |
+### 4.3 TerrainAnalyzer — 地形理解（Flash LLM，每 30 秒）
 
-### 4.3 精细信息的获取：按需观察工具
+EventTicker 告诉你"发生了什么"，但不回答"这是什么地方"。地形理解需要 LLM 从扫描数据中做语义推理。
 
-Flash Summarizer 提供的是**高层环境摘要**，不含精确坐标。当 Agent 需要精细信息（如建房子时需要知道具体哪些坐标有橡木原木）时，由 **Agent Loop 主动调用观察工具**获取：
+**输入**：最近一次完整扫描的数据（16 方向 × 3 俯仰层的 48 个射线采样点 + 区域方块统计）
+
+**触发条件**（满足任一即触发）：
+- 距离上次地形分析已过 30 秒
+- Agent 位置移动超过 8 格（进入了新区域）
+- Agent 首次启动（冷启动，同步调用，5s 超时降级为模板）
+
+**Flash LLM 的 Prompt 要点**：
+- 输入：48 个采样点的（方向、俯仰角、命中方块名、距离、光照）+ 区域方块聚合统计
+- 输出：一段 100-200 字的自然语言地形描述
+- 不关心 Agent 的任务——只回答"这个位置周围的地形结构是什么样的"
+- 用 `max_tokens=256`，输出简短
+
+**输出示例**：
+```
+当前处于平原生物群系的开阔地带。东侧约10格处有一片橡树林（约8棵树），西侧地势向下倾斜（下方5格外为空气，可能是峡谷或悬崖），北侧15格处有水源，南侧是平坦草地。脚下为草地，光照充足（skyLight=15），未检测到洞穴入口。未发现熔岩或其他危险地形。
+```
+
+**输出写入 WorkingMemory**，作为 `observation` 条目（不计入 consolidate 配额）。
+
+**容错**：Flash API 失败时保留上一次地形分析结果。连续失败 3 次后降级为模板（纯基于扫描数据拼接，不使用 LLM）。
+
+**模型选择**：Flash LLM（如 deepseek-v4-flash）。测试表明简短输出约 2 秒，冗长输出约 10 秒。地形分析 prompt 输入 ~800 tokens，输出控制在 200 字以内，预估延迟 2-3 秒。每 30 秒调用一次，成本极低。
+
+### 4.4 感知记忆的写入策略
+
+EventTicker 和 TerrainAnalyzer 的输出都写入 WorkingMemory，类型为 `observation`。
+
+**关键规则**：observation 条目**不计入 WorkingMemory 的 consolidate 触发配额**。
+
+原因：consolidate（工作记忆压缩为长期记忆）应该由 Agent 的**行动密度**驱动——做了多少事、做了多少决策——而不是由"周围路过了几只羊"驱动。observation 提供环境上下文，但不推动记忆压缩。
+
+实现方式：WorkingMemory 的条目新增 `consolidate_weight` 字段，observation 条目设为 `0`（不触发计数），action/reasoning 等条目设为 `1`。Consolidate 仅当 `sum(consolidate_weight) >= threshold` 时触发。Consolidate 时 observation 条目仍然**参与内容合并**（它们提供环境上下文），只是不参与触发决策。
+
+### 4.5 为什么不需要 $ENV_SUMMARY 注入
+
+旧的方案将环境摘要作为独立的 prompt 变量（`$ENV_SUMMARY`）注入。新方案取消这个变量，因为：
+
+1. **Observation 已在 WorkingMemory 中**：Agent Loop 的 prompt 已经包含 `$WORKING_MEMORY`，LLM 自然能看到所有 observation 条目（包括 EventTicker 的事件和 TerrainAnalyzer 的地形描述）
+2. **即时周围信息已有专用变量**：`$NEARBY_BLOCKS`、`$NEARBY_ENTITIES`、`$BLOCK_BELOW` 等提供了当前时刻的精确周围状态
+3. **时间线上的关联**：observation 条目和其他记忆（action、reasoning）按时间顺序交错排列，LLM 可以看到"在骷髅出现（observation）→ 我决定逃跑（action）→ 逃跑成功（action result）"的完整因果链
+
+**构建 prompt 前的主动观察**：在 Agent Loop 构建 prompt 之前，系统可以主动触发一次快速环境检查（如刷新 `$NEARBY_BLOCKS`、`$NEARBY_ENTITIES` 等状态），确保 LLM 看到的是最新鲜的即时环境数据。这不涉及记忆写入，只是刷新状态快照。
+
+### 4.6 精细信息的获取：按需观察工具
+
+EventTicker 和 TerrainAnalyzer 提供的是**高层环境理解**，不含精确坐标。当 Agent 需要精细信息（如建房子时需要知道具体哪些坐标有橡木原木）时，由 **Agent Loop 主动调用观察工具**获取：
 
 **观察工具示例**：
 
@@ -229,7 +286,7 @@ Flash Summarizer 提供的是**高层环境摘要**，不含精确坐标。当 A
 
 ```
 Agent Loop:
-  1. 读取 $ENV_SUMMARY → 「前方是一片橡树林，大约有 8 棵树」
+  1. 读取 $WORKING_MEMORY → observation「东侧有一片橡树林（约8棵树）」
   2. LLM 判断：需要知道确切的树木坐标才能建房子
   3. 调用观察工具 !scanArea(自身位置, 16)
   4. 工具返回 [{oak_log, (112,64,-203)}, {oak_log, (115,64,-200)}, ...]
@@ -238,28 +295,9 @@ Agent Loop:
 ```
 
 **设计要点**：
-- 观察工具的返回值在 WorkingMemory 中属于**工具执行结果**（与其他 action 同级），不单独开辟 observation 通道
+- 观察工具的返回值在 WorkingMemory 中属于**工具执行结果**（与其他 action 同级）
 - Agent 不需要坐标时，完全不调用观察工具——不浪费上下文
-- 观察工具内部直接调用 JS 端的 `bot.blockAt()`、`bot.findBlocks()` 等函数，不走 Flash Summarizer
-
-### 4.4 感知记忆与行动记忆分离
-
-在记忆系统中，感知数据使用独立通道：
-
-```
-WorkingMemory 条目类型：
-  - action          ← Agent 自身操作（含观察工具的调用结果）
-  - observation     ← 环境感知（Flash Summarizer 总结的结果）
-  - interaction     ← 与玩家对话
-  - failure         ← 操作失败
-  - discovery       ← 值得注意的发现（Flash LLM 异常标记）
-  - reasoning       ← LLM 内部推理
-
-Memory Graph 节点：
-  - NodeType.event  ← 用 subtype 区分 "perception" vs "action"
-```
-
-**设计原则**：主 LLM 通过 `$ENV_SUMMARY` 获得**当前环境的清晰快照**，通过 WorkingMemory 的 `observation` 条目获得**最近的环境变化时间线**，通过观察工具获得**按需的精确坐标**，通过长期记忆 Graph 获得**过去在类似环境中的经验**。四者各司其职，不混杂。
+- 观察工具内部直接调用 JS 端的 `bot.blockAt()`、`bot.findBlocks()` 等函数，不走 Flash LLM
 
 ---
 
@@ -367,7 +405,7 @@ Agent 在**非执行态**（没有代码在跑，没有 LLM 调用在进行）�
 
 ```
 空闲扫描循环（感知 Worker 负责）：
-  每 5 秒：快速扫描（blockAtCursor 水平 8 方向 + 平视）
+  每 2 秒：快速扫描（blockAtCursor 水平 8 方向 + 平视）
   每 30 秒：完整扫描（blockAtCursor 16 方向 × 3 俯仰层）
   每 60 秒：区域方块统计（findBlocks 8 格范围聚合）
 ```
@@ -384,16 +422,17 @@ Agent 在**非执行态**（没有代码在跑，没有 LLM 调用在进行）�
 
 ### 6.3 感知频率分级
 
-| Agent 状态 | 被动事件监听 | 主动扫描频率 | Flash 总结频率 | 说明 |
-|-----------|------------|------------|--------------|------|
-| 空闲 | 全量 | 每 30 秒完整 | 每 30 秒 | 低频即可，环境变化慢 |
-| 代码执行中 | 全量 | 每 10 秒快速 | 每 5-10 秒 | 执行期间环境仍在变化，感知 Worker 持续记录 |
-| 战斗中 | Reflex Layer 自动操作 | 不执行主动扫描 | 不触发 Flash | 战斗由 Reflex 全权处理，结果事后写入 WorkingMemory |
-| 与玩家对话 | 全量 | 按需（对话中提及环境时）| 按需 | |
+| Agent 状态 | 被动事件监听 | 主动扫描 | EventTicker | TerrainAnalyzer |
+|-----------|------------|---------|-------------|-----------------|
+| 空闲 | 全量 | 5s快速/30s完整/60s统计 | 每 2s | 每 30s |
+| 代码执行中 | 全量 | 5s快速/30s完整/60s统计 | 每 2s | 每 30s 或位置变化 > 8 格 |
+| 战斗中 | Reflex Layer 接管 | 暂停主动扫描 | 暂停（避免干扰 Reflex） | 暂停 |
+| 与玩家对话 | 全量 | 按需 | 每 2s | 按需 |
 
 **战斗中感知的特殊处理**：
-- Reflex Layer 在战斗中不使用 Flash Summarizer——战斗需要的是毫秒级反应，不是语义总结
+- Reflex Layer 在战斗中不使用 EventTicker 和 TerrainAnalyzer——战斗需要毫秒级反应，不是语义理解
 - 战斗结束后，Reflex Layer 将战斗过程摘要（对手类型、伤害量、结果、消耗物品）作为 `observation` 条目写入 WorkingMemory
+- 战斗结束后 EventTicker 和 TerrainAnalyzer 自动恢复
 - Agent Loop 在下一轮感知时，会从 WorkingMemory 中读取到「刚才经历了一场战斗」的信息
 
 ---
@@ -412,14 +451,15 @@ Minecraft 世界
     ├──→ 状态快照（health, food, position, inventory）每 1 秒
     │       │
     │       ▼
-    │   原始感知缓冲区
+    │   原始感知缓冲区 (PerceptionBuffer)
     │       │
-    │       ▼
-    │   Flash LLM Summarizer（纯观测，不感知任务）
+    │       ├──→ [每 2s] EventTicker（纯代码聚合）
+    │       │       → observation 条目 → WorkingMemory
+    │       │       （不计入 consolidate 配额，但参与合并）
     │       │
-    │       ├──→ $ENV_SUMMARY → 注入主 LLM Prompt（环境理解）
-    │       ├──→ observation 条目 → WorkingMemory（环境变化时间线）
-    │       └──→ discovery 条目 → WorkingMemory（异常标记）
+    │       └──→ [每 30s] TerrainAnalyzer（Flash LLM）
+    │               → observation 条目 → WorkingMemory
+    │               （不计入 consolidate 配额）
     │
     ├──→ 紧急感知事件 ──→ Reflex Layer
     │       │                │
@@ -430,17 +470,32 @@ Minecraft 世界
     │
     └──→ Agent Loop
              │
-             ├──→ 读取 $ENV_SUMMARY（环境理解）
-             ├──→ 读取 WorkingMemory（最近事件 + 上次执行结果）
+             ├──→ [构建 prompt 前] 主动刷新周围状态
+             │       ($NEARBY_BLOCKS, $NEARBY_ENTITIES 等)
+             ├──→ 读取 $WORKING_MEMORY
+             │       ├── EventTicker 的 observation 条目（事件时间线）
+             │       ├── TerrainAnalyzer 的 observation 条目（地形理解）
+             │       ├── 之前的 action 条目（操作记录）
+             │       └── 其他条目（interaction, reasoning, failure）
              ├──→ [按需] 调用观察工具（!scanArea 等）
-             │         → 返回值写入 WorkingMemory（作为工具调用结果）
+             │         → 返回值写入 WorkingMemory（作为工具调用结果，type=action）
              ├──→ 主 LLM 决策
              ├──→ 生成代码（Prompt 约束：简短，< 30 行）
-             ├──→ [执行前] 记录代码意图 → WorkingMemory
-             ├──→ 执行代码（感知 Worker 在后台持续记录）
-             ├──→ [执行后] 记录执行结果 → WorkingMemory
+             ├──→ [执行前] 记录代码意图 → WorkingMemory (type=action)
+             ├──→ 执行代码（感知 Worker 在后台持续记录事件）
+             ├──→ [执行后] 记录执行结果 → WorkingMemory (type=action)
              └──→ 回到循环
 ```
+
+**关键数据流说明**：
+
+| 数据 | 通道 | 延迟 | 消费者 |
+|------|------|------|--------|
+| 即时周围状态（方块、实体） | `$NEARBY_BLOCKS` 等 prompt 变量 | 实时（每 1s 更新） | Agent Loop prompt |
+| 离散事件（实体、声音、天气、方块变化） | EventTicker → WorkingMemory | ≤ 2s | Agent Loop 通过 `$WORKING_MEMORY` |
+| 地形理解（山、谷、林、水、洞穴） | TerrainAnalyzer → WorkingMemory | ≤ 30s | Agent Loop 通过 `$WORKING_MEMORY` |
+| 紧急威胁（怪物靠近、熔岩、悬崖） | 直推 Reflex Layer | 即时 | Reflex Layer 硬编码响应 |
+| 精确坐标（按需） | 观察工具 → WorkingMemory (type=action) | 即时（工具调用） | Agent Loop 下一步决策 |
 
 ---
 
@@ -450,10 +505,11 @@ Minecraft 世界
 |--------|------|------|--------|
 | P0 | 扩大感知半径（3→8 格方块，16→32 格实体） | 立竿见影 | 低 |
 | P0 | 被动事件监听（entitySpawn/Gone，blockUpdate，soundEffectHeard，rain） | 建立连续事件流 | 低 |
-| P1 | 感知 Worker 独立运行（JS 端定时扫描 + 异步推送紧急事件） | 被动感知独立于 Agent Loop | 中 |
-| P1 | Perception Summarizer（Flash LLM 纯观测总结，不管任务） | 解决数据过载和记忆混杂 | 中 |
-| P1 | Prompt 约束代码长度 + 工作记忆执行前/后分别收录 | 缩短盲跑窗口，感知数据持续流入 | 低 |
-| P2 | Reflex Layer 战斗结果写入 WorkingMemory | 战斗经验可被记忆和复盘 | 低 |
-| P2 | 主动射线扫描（blockAtCursor 多点采样，地形理解） | 空间结构感知 | 中 |
+| P1 | 感知 Worker 独立运行（JS 端三级定时扫描 + 紧急事件直推 Reflex） | 被动感知独立于 Agent Loop | 中 |
+| P1 | EventTicker（纯代码事件聚合，每 2s → WorkingMemory） | 解决数据过载，事件时间线可见 | 低 |
+| P1 | Prompt 约束代码长度 + 工作记忆执行前/后分别收录 | 缩短盲跑窗口 | 低 |
+| P2 | TerrainAnalyzer（Flash LLM 地形理解，每 30s → WorkingMemory） | 空间结构感知 | 中 |
+| P2 | Reflex Layer 战斗结果写入 WorkingMemory | 战斗经验可被记忆 | 低 |
 | P2 | 实体状态跟踪表 | 趋势感知、威胁预警 | 中 |
+| P2 | WorkingMemory observation 不计入 consolidate 配额 | 防止感知事件触发不必要的记忆压缩 | 低 |
 | P3 | 按需观察工具（!scanArea, !getBlockAt 等） | 精细化操作时获取精确坐标 | 低 |

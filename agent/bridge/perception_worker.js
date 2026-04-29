@@ -1,0 +1,625 @@
+/**
+ * Perception Worker
+ *
+ * Standalone JS perception module that runs independently of Agent Loop.
+ * Continuously listens to Mineflayer events and performs active scanning.
+ *
+ * Three duties:
+ *   1. Passive event listening (entitySpawn, blockUpdate, soundEffectHeard, ...)
+ *   2. Multi-tier active scanning (5s quick / 30s full / 60s block stats)
+ *   3. Urgent threat detection → direct push to Reflex Layer
+ *
+ * Decoupled from BrainBridge via callbacks: onEvent(normal) + onUrgent(emergency).
+ */
+
+import Vec3 from 'vec3';
+
+const HOSTILE_MOBS = new Set([
+  'zombie', 'skeleton', 'spider', 'creeper', 'enderman',
+  'witch', 'slime', 'phantom', 'drowned', 'husk', 'stray',
+  'cave_spider', 'blaze', 'ghast', 'magma_cube', 'hoglin',
+  'piglin', 'piglin_brute', 'zoglin', 'wither_skeleton',
+  'vindicator', 'evoker', 'pillager', 'ravager', 'vex',
+  'guardian', 'elder_guardian', 'warden'
+]);
+
+// Ambient / cosmetic mobs that are never worth recording
+const IGNORED_MOBS = new Set([
+  'bat', 'bee', 'glow_squid', 'cod', 'salmon', 'pufferfish',
+  'tropical_fish', 'squid', 'fox', 'ocelot', 'rabbit',
+  'parrot', 'turtle', 'axolotl', 'tadpole', 'frog'
+]);
+
+const URGENT_HOSTILE_DISTANCE = 8;
+const MAX_BLOCK_UPDATE_DISTANCE = 32;  // ignore block changes farther than this
+
+export class PerceptionWorker {
+  constructor(bot, onEvent, onUrgent, onScan, options = {}) {
+    this.bot = bot;
+    this.onEvent = onEvent;
+    this.onUrgent = onUrgent;
+    this.onScan = onScan;  // terrain scan snapshots — separate channel from events
+    this.options = {
+      quickScanIntervalMs: 5000,
+      fullScanIntervalMs: 30000,
+      blockStatsIntervalMs: 60000,
+      perceptionPushIntervalMs: 3000,
+      entityMoveThrottleMs: 3000,
+      blockUpdateThrottleMs: 1000,
+      soundMinVolume: 0.3,
+      soundMaxDistance: 32,
+      rayRange: 128,
+      urgentCheckIntervalMs: 500,
+      ...options
+    };
+
+    // Entity tracking: entityId → { name, type, position, firstSeen, lastSeen, prevDistance }
+    this._knownEntities = new Map();
+
+    // Throttle trackers
+    this._lastEntityMoveTime = new Map();   // entityId → last push timestamp
+    this._lastBlockUpdateTime = new Map();  // "x,y,z" → last push timestamp
+
+    // Sound dedup: "soundName|direction" → { count, lastTime }
+    this._soundDedup = new Map();
+
+    // Active scan interval handles
+    this._quickScanTimer = null;
+    this._fullScanTimer = null;
+    this._blockStatsTimer = null;
+    this._urgentCheckTimer = null;
+
+    // Bound handlers for cleanup
+    this._handlers = {};
+    this._running = false;
+  }
+
+  // ==================== Lifecycle ====================
+
+  start() {
+    if (this._running) return;
+    this._running = true;
+    this._bindEvents();
+    this._scanExistingEntities();  // catch entities already present before worker started
+    this._startScanTimers();
+    this._startUrgentCheck();
+  }
+
+  stop() {
+    this._running = false;
+    this._unbindEvents();
+    this._clearTimers();
+    this._knownEntities.clear();
+    this._lastEntityMoveTime.clear();
+    this._lastBlockUpdateTime.clear();
+    this._soundDedup.clear();
+  }
+
+  // ==================== Initial entity scan ====================
+
+  _scanExistingEntities() {
+    // Catch entities that already exist before event listeners were bound.
+    // Without this, chickens and other passive mobs nearby would never be recorded.
+    if (!this.bot?.entity) return;
+    const now = Date.now();
+    for (const entity of Object.values(this.bot.entities)) {
+      if (entity === this.bot.entity) continue;
+      const name = entity.name || entity.username || '';
+      if (IGNORED_MOBS.has(name)) continue;
+      const dist = entity.position.distanceTo(this.bot.entity.position);
+      if (dist > 32) continue;
+      this._knownEntities.set(entity.id, {
+        name: name,
+        type: entity.type,
+        position: entity.position.clone(),
+        firstSeen: now,
+        lastSeen: now,
+        distance: dist
+      });
+      this.onEvent('entity_spawn', {
+        entity_id: entity.id,
+        name: name,
+        type: entity.type,
+        position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
+        distance: Math.round(dist),
+        direction: this._directionTo(entity.position),
+        is_hostile: HOSTILE_MOBS.has(name)
+      });
+    }
+  }
+
+  // ==================== Event Binding ====================
+
+  _bindEvents() {
+    this._handlers.entitySpawn = (entity) => this._onEntitySpawn(entity);
+    this._handlers.entityGone = (entity) => this._onEntityGone(entity);
+    this._handlers.entityMoved = (entity) => this._onEntityMoved(entity);
+    this._handlers.blockUpdate = (oldBlock, newBlock) => this._onBlockUpdate(oldBlock, newBlock);
+    this._handlers.soundEffectHeard = (soundName, position, volume, pitch) =>
+      this._onSoundHeard(soundName, position, volume, pitch);
+    this._handlers.playerJoined = (player) => this._onPlayerJoined(player);
+    this._handlers.playerLeft = (player) => this._onPlayerLeft(player);
+    this._handlers.rain = () => this._onWeatherChange();
+
+    this.bot.on('entitySpawn', this._handlers.entitySpawn);
+    this.bot.on('entityGone', this._handlers.entityGone);
+    this.bot.on('entityMoved', this._handlers.entityMoved);
+    this.bot.on('blockUpdate', this._handlers.blockUpdate);
+    this.bot.on('soundEffectHeard', this._handlers.soundEffectHeard);
+    this.bot.on('playerJoined', this._handlers.playerJoined);
+    this.bot.on('playerLeft', this._handlers.playerLeft);
+    // rain event: some versions fire with no args, some don't fire at all
+    // we also check weather changes in urgent check loop
+    try { this.bot.on('rain', this._handlers.rain); } catch (_) { /* ignore if unsupported */ }
+  }
+
+  _unbindEvents() {
+    if (!this.bot) return;
+    this.bot.removeListener('entitySpawn', this._handlers.entitySpawn);
+    this.bot.removeListener('entityGone', this._handlers.entityGone);
+    this.bot.removeListener('entityMoved', this._handlers.entityMoved);
+    this.bot.removeListener('blockUpdate', this._handlers.blockUpdate);
+    this.bot.removeListener('soundEffectHeard', this._handlers.soundEffectHeard);
+    this.bot.removeListener('playerJoined', this._handlers.playerJoined);
+    this.bot.removeListener('playerLeft', this._handlers.playerLeft);
+    try { this.bot.removeListener('rain', this._handlers.rain); } catch (_) { /* ignore */ }
+  }
+
+  _startScanTimers() {
+    this._quickScanTimer = setInterval(() => this._doQuickScan(), this.options.quickScanIntervalMs);
+    this._fullScanTimer = setInterval(() => this._doFullScan(), this.options.fullScanIntervalMs);
+    this._blockStatsTimer = setInterval(() => this._doBlockStats(), this.options.blockStatsIntervalMs);
+  }
+
+  _startUrgentCheck() {
+    this._urgentCheckTimer = setInterval(() => this._checkUrgentThreats(), this.options.urgentCheckIntervalMs);
+  }
+
+  _clearTimers() {
+    if (this._quickScanTimer) { clearInterval(this._quickScanTimer); this._quickScanTimer = null; }
+    if (this._fullScanTimer) { clearInterval(this._fullScanTimer); this._fullScanTimer = null; }
+    if (this._blockStatsTimer) { clearInterval(this._blockStatsTimer); this._blockStatsTimer = null; }
+    if (this._urgentCheckTimer) { clearInterval(this._urgentCheckTimer); this._urgentCheckTimer = null; }
+  }
+
+  // ==================== Passive Event Handlers ====================
+
+  _onEntitySpawn(entity) {
+    if (!this._running || !this.bot?.entity) return;
+    // Filter self
+    if (entity === this.bot.entity) return;
+    // Filter ambient / cosmetic mobs
+    const mobName = entity.name || '';
+    if (IGNORED_MOBS.has(mobName)) return;
+    // Filter far entities (> 32 blocks)
+    const dist = entity.position.distanceTo(this.bot.entity.position);
+    if (dist > 32) return;
+
+    const now = Date.now();
+    this._knownEntities.set(entity.id, {
+      name: entity.name || entity.username || 'unknown',
+      type: entity.type,
+      position: entity.position.clone(),
+      firstSeen: now,
+      lastSeen: now,
+      distance: dist
+    });
+
+    this.onEvent('entity_spawn', {
+      entity_id: entity.id,
+      name: entity.name || entity.username || 'unknown',
+      type: entity.type,
+      position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
+      distance: Math.round(dist),
+      direction: this._directionTo(entity.position),
+      is_hostile: HOSTILE_MOBS.has(entity.name)
+    });
+  }
+
+  _onEntityGone(entity) {
+    if (!this._running || !this.bot?.entity) return;
+    if (entity === this.bot.entity) return;
+
+    const known = this._knownEntities.get(entity.id);
+    // Skip if we never tracked this entity (ambient mob filtered at spawn)
+    if (!known) return;
+    this._knownEntities.delete(entity.id);
+
+    this.onEvent('entity_gone', {
+      entity_id: entity.id,
+      name: known.name,
+      type: entity.type
+    });
+  }
+
+  _onEntityMoved(entity) {
+    if (!this._running || !this.bot?.entity) return;
+    if (entity === this.bot.entity) return;
+
+    const now = Date.now();
+    const lastTime = this._lastEntityMoveTime.get(entity.id) || 0;
+    if (now - lastTime < this.options.entityMoveThrottleMs) return;
+
+    const dist = entity.position.distanceTo(this.bot.entity.position);
+    if (dist > 32) return;
+
+    const known = this._knownEntities.get(entity.id);
+    if (!known) return; // only track entities we've seen spawn
+
+    const prevDist = known.distance;
+    known.position = entity.position.clone();
+    known.distance = dist;
+    known.lastSeen = now;
+
+    // Only push when entity is getting closer (approaching)
+    if (prevDist - dist < 1) return;
+
+    this._lastEntityMoveTime.set(entity.id, now);
+
+    this.onEvent('entity_approaching', {
+      entity_id: entity.id,
+      name: known.name,
+      type: entity.type,
+      distance: Math.round(dist),
+      prev_distance: Math.round(prevDist),
+      direction: this._directionTo(entity.position),
+      is_hostile: HOSTILE_MOBS.has(known.name)
+    });
+  }
+
+  _onBlockUpdate(oldBlock, newBlock) {
+    if (!this._running || !this.bot?.entity) return;
+    if (!oldBlock || !newBlock) return;
+
+    // Filter distance first (cheap, eliminates most far-away noise)
+    const dist = oldBlock.position.distanceTo(this.bot.entity.position);
+    if (dist > MAX_BLOCK_UPDATE_DISTANCE) return;
+
+    // Filter significance before throttle — non-significant changes
+    // must not prevent significant ones from being recorded
+    const isSignificant = this._isSignificantBlockChange(oldBlock.name, newBlock.name);
+    if (!isSignificant) return;
+
+    // Throttle: same position once per second (only for significant changes)
+    const now = Date.now();
+    const posKey = `${oldBlock.position.x},${oldBlock.position.y},${oldBlock.position.z}`;
+    const lastTime = this._lastBlockUpdateTime.get(posKey) || 0;
+    if (now - lastTime < this.options.blockUpdateThrottleMs) return;
+    this._lastBlockUpdateTime.set(posKey, now);
+
+    this.onEvent('block_update', {
+      position: { x: oldBlock.position.x, y: oldBlock.position.y, z: oldBlock.position.z },
+      old_block: oldBlock.name,
+      new_block: newBlock.name,
+      distance: Math.round(dist),
+      direction: this._directionTo(oldBlock.position)
+    });
+  }
+
+  _isSignificantBlockChange(oldName, newName) {
+    // Always record: ore exposure, liquids, TNT, explosions, air→solid, solid→air
+    if (oldName === 'air' || oldName === 'cave_air' || newName === 'air' || newName === 'cave_air') return true;
+    if (oldName.includes('ore') || newName.includes('ore')) return true;
+    if (oldName === 'water' || oldName === 'lava' || newName === 'water' || newName === 'lava') return true;
+    if (oldName === 'tnt' || newName === 'tnt') return true;
+    // Agent-caused changes: crafting tables, furnaces, chests, beds
+    if (newName.includes('crafting_table') || newName.includes('furnace') ||
+        newName.includes('chest') || newName.includes('bed')) return true;
+    return false;
+  }
+
+  _onSoundHeard(soundName, position, volume, pitch) {
+    if (!this._running || !this.bot?.entity) return;
+    if (volume < this.options.soundMinVolume) return;
+
+    const dist = position.distanceTo(this.bot.entity.position);
+    if (dist > this.options.soundMaxDistance) return;
+
+    const direction = this._directionTo(position);
+    const dedupKey = `${soundName}|${direction}`;
+    const now = Date.now();
+    const existing = this._soundDedup.get(dedupKey);
+
+    if (existing && (now - existing.lastTime) < 5000) {
+      existing.count++;
+      existing.lastTime = now;
+      return; // don't push duplicate, will be consolidated by EventTicker
+    }
+
+    this._soundDedup.set(dedupKey, { count: 1, lastTime: now });
+
+    this.onEvent('sound_heard', {
+      sound_name: soundName,
+      position: { x: position.x, y: position.y, z: position.z },
+      distance: Math.round(dist),
+      direction: direction,
+      volume: Math.round(volume * 100) / 100
+    });
+  }
+
+  _onPlayerJoined(player) {
+    if (!this._running) return;
+    this.onEvent('player_joined', {
+      player_name: player.username || player.name || 'unknown'
+    });
+  }
+
+  _onPlayerLeft(player) {
+    if (!this._running) return;
+    this.onEvent('player_left', {
+      player_name: player.username || player.name || 'unknown'
+    });
+  }
+
+  _onWeatherChange() {
+    if (!this._running) return;
+    const weather = this.bot.thunderState > 0.1 ? 'Thunderstorm' :
+                    this.bot.rainState > 0.1 ? 'Rain' : 'Clear';
+    this.onEvent('weather_change', { new_weather: weather });
+  }
+
+  // ==================== Active Scanning (snapshot, separate channel) ====================
+
+  _doQuickScan() {
+    if (!this._running || !this.bot?.entity) return;
+    const samples = [];
+    for (let i = 0; i < 8; i++) {
+      const yaw = i * 45;
+      const result = this._rayScanAt(yaw, 0);
+      if (result) samples.push(result);
+    }
+    // Quick scan: only used for urgent detection (lava/cliff), not terrain analysis
+    // Pushed via onScan so Python can check for threats
+    if (this.onScan) this.onScan('quick_scan', { samples });
+  }
+
+  _doFullScan() {
+    if (!this._running || !this.bot?.entity) return;
+    const samples = [];
+    for (let i = 0; i < 16; i++) {
+      const yaw = i * 22.5;
+      for (const pitch of [-45, 0, 30]) {
+        const result = this._rayScanAt(yaw, pitch);
+        if (result) samples.push(result);
+      }
+    }
+    // Full scan is a terrain snapshot — independent channel, not mixed with events
+    if (this.onScan) this.onScan('full_scan', { samples });
+  }
+
+  /**
+   * Ray scan using bot.world.raycast for arbitrary directions.
+   * This avoids changing the bot's actual look direction.
+   */
+  _rayScanAt(yawDeg, pitchDeg) {
+    // yaw: 0=south(+Z), 90=west(-X), 180=north(-Z), 270=east(+X)
+    const yaw = (yawDeg * Math.PI) / 180;
+    const pitch = (pitchDeg * Math.PI) / 180;
+    const dx = -Math.sin(yaw) * Math.cos(pitch);
+    const dy = -Math.sin(pitch);
+    const dz = Math.cos(yaw) * Math.cos(pitch);
+    const origin = this.bot.entity.position.offset(0, 1.6, 0); // eye height
+
+    try {
+      const hit = this.bot.world.raycast(origin, new Vec3(dx, dy, dz), this.options.rayRange);
+      if (hit) {
+        const block = this.bot.blockAt(hit.position);
+        return {
+          yaw: yawDeg,
+          pitch: pitchDeg,
+          block_name: block ? block.name : 'unknown',
+          distance: Math.round(hit.position.distanceTo(origin)),
+          position: { x: hit.position.x, y: hit.position.y, z: hit.position.z },
+          sky_light: block ? block.skyLight : null,
+          light: block ? block.light : null
+        };
+      }
+      return {
+        yaw: yawDeg,
+        pitch: pitchDeg,
+        block_name: 'air',
+        distance: this.options.rayRange,
+        position: null,
+        sky_light: 15,
+        light: 15
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _doBlockStats() {
+    if (!this._running || !this.bot?.entity) return;
+
+    try {
+      const positions = this.bot.findBlocks({
+        matching: (block) => block && block.name !== 'air' && block.name !== 'cave_air',
+        maxDistance: 8,
+        count: 2000
+      });
+
+      // Aggregate by block name and direction
+      const stats = {};
+      for (const pos of positions) {
+        const block = this.bot.blockAt(pos);
+        if (!block) continue;
+        const name = block.name;
+        if (!stats[name]) {
+          stats[name] = { count: 0, directions: {} };
+        }
+        stats[name].count++;
+        const dir = this._directionTo(pos);
+        stats[name].directions[dir] = (stats[name].directions[dir] || 0) + 1;
+      }
+
+      if (this.onScan) this.onScan('block_stats', { stats, agent_position: this._botPosition() });
+    } catch (_) {
+      // findBlocks may fail if world not loaded
+    }
+  }
+
+  // ==================== Urgent Threat Detection ====================
+
+  _checkUrgentThreats() {
+    if (!this._running || !this.bot?.entity) return;
+    this._checkHostileClose();
+    this._checkLavaNearby();
+    this._checkCliffAhead();
+    this._checkDrowning();
+      this._checkWeatherUrgent();
+  }
+
+  _checkHostileClose() {
+    if (!this.bot?.entity) return;
+    for (const entity of Object.values(this.bot.entities)) {
+      if (!entity || entity === this.bot.entity) continue;
+      if (!HOSTILE_MOBS.has(entity.name) && entity.type !== 'hostile') continue;
+
+      const dist = entity.position.distanceTo(this.bot.entity.position);
+      if (dist > URGENT_HOSTILE_DISTANCE) continue;
+
+      // Check if approaching
+      const known = this._knownEntities.get(entity.id);
+      const isApproaching = known && known.distance > dist;
+
+      this.onUrgent('hostile_close', {
+        entity_id: entity.id,
+        name: entity.name || 'unknown',
+        type: entity.type,
+        distance: Math.round(dist),
+        direction: this._directionTo(entity.position),
+        approaching: isApproaching
+      });
+    }
+  }
+
+  _checkLavaNearby() {
+    if (!this.bot?.entity) return;
+    const origin = this.bot.entity.position.offset(0, 1.6, 0);
+    const yaw = this.bot.entity.yaw;
+    const pitch = 0;
+
+    // Check forward 3 blocks
+    for (let dist = 1; dist <= 3; dist++) {
+      const dx = -Math.sin(yaw) * Math.cos(pitch) * dist;
+      const dz = -Math.cos(yaw) * Math.cos(pitch) * dist;
+      const pos = origin.offset(dx, 0, dz);
+      const block = this.bot.blockAt(pos);
+      if (block && block.name === 'lava') {
+        this.onUrgent('lava_nearby', {
+          distance: dist,
+          direction: 'forward',
+          position: { x: pos.x, y: pos.y, z: pos.z }
+        });
+        return;
+      }
+    }
+    // Also check block below
+    const below = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+    if (below && below.name === 'lava') {
+      this.onUrgent('lava_nearby', {
+        distance: 0,
+        direction: 'below',
+        position: { x: below.position.x, y: below.position.y, z: below.position.z }
+      });
+    }
+  }
+
+  _checkCliffAhead() {
+    if (!this.bot?.entity) return;
+    const yaw = this.bot.entity.yaw;
+    const origin = this.bot.entity.position.offset(0, 0, 0);
+
+    // Check blocks 1-4 ahead at y-1, y-2, y-3
+    for (let ahead = 1; ahead <= 4; ahead++) {
+      const dx = -Math.sin(yaw) * ahead;
+      const dz = -Math.cos(yaw) * ahead;
+      let allAir = true;
+      for (let down = 1; down <= 3; down++) {
+        const pos = origin.offset(dx, -down, dz);
+        const block = this.bot.blockAt(pos);
+        if (block && block.name !== 'air' && block.name !== 'cave_air') {
+          allAir = false;
+          break;
+        }
+      }
+      if (allAir) {
+        this.onUrgent('cliff_ahead', {
+          distance: ahead,
+          direction: this._directionTo(origin.offset(dx, 0, dz))
+        });
+        return;
+      }
+    }
+  }
+
+  _checkDrowning() {
+    if (!this.bot?.entity) return;
+    const headBlock = this.bot.blockAt(this.bot.entity.position.offset(0, 1, 0));
+    if (!headBlock) return;
+    const inWater = headBlock.name === 'water';
+
+    // Check oxygen level (bot.oxygen is available in some mineflayer versions)
+    const oxygen = this.bot.oxygen;
+    if (inWater && oxygen !== undefined && oxygen < 5) {
+      this.onUrgent('drowning', {
+        oxygen: oxygen,
+        position: this._botPosition()
+      });
+      return;
+    }
+    // If oxygen API not available, check if submerged for too long
+    // by checking if head and block above head are both water
+    if (inWater) {
+      const aboveHead = this.bot.blockAt(this.bot.entity.position.offset(0, 2, 0));
+      if (aboveHead && aboveHead.name === 'water') {
+        this.onUrgent('drowning', {
+          oxygen: oxygen || 'unknown',
+          position: this._botPosition()
+        });
+      }
+    }
+  }
+
+  _checkWeatherUrgent() {
+    // Fallback weather detection if 'rain' event isn't firing reliably
+    if (!this.bot) return;
+    const currentWeather = this.bot.thunderState > 0 ? 'Thunderstorm' :
+                           this.bot.rainState > 0 ? 'Rain' : 'Clear';
+    if (this._lastWeather && this._lastWeather !== currentWeather) {
+      this.onEvent('weather_change', { new_weather: currentWeather });
+    }
+    this._lastWeather = currentWeather;
+  }
+
+  // ==================== Helpers ====================
+
+  _directionTo(targetPos) {
+    if (!this.bot?.entity) return 'unknown';
+    const dx = targetPos.x - this.bot.entity.position.x;
+    const dy = targetPos.y - this.bot.entity.position.y;
+    const dz = targetPos.z - this.bot.entity.position.z;
+    const angle = (Math.atan2(dx, dz) * 180) / Math.PI;
+
+    let h = '';
+    if (angle >= -22.5 && angle < 22.5) h = '北';
+    else if (angle >= 22.5 && angle < 67.5) h = '东北';
+    else if (angle >= 67.5 && angle < 112.5) h = '东';
+    else if (angle >= 112.5 && angle < 157.5) h = '东南';
+    else if (angle >= 157.5 || angle < -157.5) h = '南';
+    else if (angle >= -157.5 && angle < -112.5) h = '西南';
+    else if (angle >= -112.5 && angle < -67.5) h = '西';
+    else if (angle >= -67.5 && angle < -22.5) h = '西北';
+
+    // Vertical direction (threshold: 2 blocks)
+    if (dy > 2) return h + '（上方' + Math.abs(dy) + "格）";
+    if (dy < -2) return h + '（下方' + Math.abs(dy) + "格）";
+    return h || '未知';
+  }
+
+  _botPosition() {
+    if (!this.bot?.entity) return null;
+    const p = this.bot.entity.position;
+    return { x: p.x, y: p.y, z: p.z };
+  }
+}

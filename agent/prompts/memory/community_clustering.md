@@ -2,11 +2,11 @@
 
 ## 社区内的节点和边
 
-{community_nodes}
+$COMMUNITY_NODES
 
 ## 已有的社区（避免重复）
 
-{existing_communities}
+$EXISTING_COMMUNITIES
 
 ## 要求
 

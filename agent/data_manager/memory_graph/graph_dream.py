@@ -30,14 +30,16 @@ class GraphDream:
         engine: GraphEngine,
         embedding: EmbeddingProvider = None,
         llm=None,
-        prompt_template: str = "",
-        config: Dict = None
+        prompt_manager=None,
+        config: Dict = None,
+        prompt_logger=None
     ):
         self.engine = engine
         self.embedding = embedding
         self.llm = llm
-        self.prompt_template = prompt_template
+        self.prompt_manager = prompt_manager
         self.config = config or {}
+        self.prompt_logger = prompt_logger
 
     # ======== Phase 1: 候选发现 ========
 
@@ -133,7 +135,7 @@ class GraphDream:
         weak_edges: List[Tuple[str, str, str]]
     ) -> Dict:
         """将候选问题发送 LLM，返回 merge/summarize/prune 计划。"""
-        if not self.llm or not self.prompt_template:
+        if not self.llm or not self.prompt_manager:
             return {}
 
         sections = []
@@ -174,12 +176,28 @@ class GraphDream:
         if not sections:
             return {}
 
-        prompt = self.prompt_template.replace("{candidates}", "\n\n".join(sections))
+        prompt = await self.prompt_manager.render(
+            'memory/memory_dream.md',
+            context={'CANDIDATES': "\n\n".join(sections)},
+            strict=False
+        )
 
         try:
+            prompt_file = None
+            if self.prompt_logger:
+                prompt_file = self.prompt_logger.log_prompt(
+                    prompt=prompt,
+                    brain_layer="memory_graph",
+                    prompt_type="dream_refine"
+                )
+
             response = await self.llm.send_request(
                 [{"role": "user", "content": prompt}]
             )
+
+            if prompt_file and response:
+                self.prompt_logger.update_response(prompt_file, response)
+
             match = re.search(r'\{.*\}', response, re.DOTALL | re.MULTILINE)
             if match:
                 return json.loads(match.group(0))

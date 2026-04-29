@@ -25,7 +25,9 @@ from ..tools.todolist_tool import TodolistTool
 from ..task_manager import ChatLogManager, PlanManager, DraftManager, TodoListStore
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
+from prompts.prompt_logger import PromptLogger
 from data_manager.memory_graph import MemoryRouter
+from ..perception import PerceptionManager
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +151,15 @@ class BrainCoordinator:
         # Prompt manager
         self.prompt_manager = PromptManager()
 
+        # Shared prompt logger for subsystems that don't create their own
+        agent_name = config.get('agent_name', 'BrainyBot')
+        enable_logging = config.get('enable_prompt_logging', True)
+        self.prompt_logger = PromptLogger(
+            base_dir=config.get('bots_dir', 'bots'),
+            agent_name=agent_name,
+            enabled=enable_logging
+        )
+
         # Todolist store (structured Markdown with ID-based operations)
         self.todolist_store = TodoListStore(config.get('agent_name', 'BrainyBot'))
 
@@ -178,8 +189,27 @@ class BrainCoordinator:
             llm=self.memory_llm,
             game_time_provider=_get_game_day,
             memory_config=memory_config,
+            prompt_manager=self.prompt_manager,
         )
         logger.info("MemoryRouter initialized")
+
+        # Perception manager (EventTicker + optional TerrainAnalyzer)
+        perception_config = config.get('perception', {})
+        perception_llm_config = config.get('perception_llm')
+        perception_llm = None
+        if perception_llm_config:
+            perception_llm_config = self._resolve_model(perception_llm_config.copy())
+            self._inject_api_keys(perception_llm_config)
+            perception_llm = create_llm_model(perception_llm_config)
+        self.perception_manager = PerceptionManager(
+            memory_router=self.memory_manager,
+            llm=perception_llm,
+            ticker_interval=perception_config.get('ticker_interval', 2.0),
+            terrain_interval=perception_config.get('terrain_interval', 30.0),
+            prompt_logger=self.prompt_logger,
+            prompt_manager=self.prompt_manager,
+        )
+        logger.info("PerceptionManager initialized")
 
         # Tool registry
         self.tool_registry = ToolRegistry()
@@ -374,12 +404,36 @@ class BrainCoordinator:
             asyncio.create_task(self.cancel_all_tasks())
             return {'status': 'ok', 'message': 'Shutdown initiated'}
 
+        # Perception event handlers (from PerceptionWorker)
+        async def handle_perception_events(data):
+            """Handle batched perception events from JS PerceptionWorker."""
+            events = data.get('events', [])
+            if events:
+                await self.perception_manager.buffer.extend(events)
+
+        async def handle_perception_urgent(data):
+            """Handle urgent perception threat → Reflex Layer."""
+            event_type = data.get('event_type', '')
+            event_data = data.get('data', {})
+            await self.reflex_layer.handle_perception_urgent(event_type, event_data)
+            return {'status': 'ok'}
+
         self.ipc_server.register_handler('combat_engaged', handle_combat_engaged)
         self.ipc_server.register_handler('low_health', handle_low_health)
         self.ipc_server.register_handler('damage_taken', handle_damage_taken)
         self.ipc_server.register_handler('death', handle_death)
         self.ipc_server.register_handler('bot_disconnected', handle_bot_disconnected)
         self.ipc_server.register_handler('shutdown', handle_shutdown)
+        async def handle_perception_scan(data):
+            """Handle terrain scan snapshot from JS PerceptionWorker (separate channel)."""
+            scan_type = data.get('scan_type', '')
+            scan_data = data.get('data', {})
+            self.perception_manager.handle_scan(scan_type, scan_data)
+            return {'status': 'ok'}
+
+        self.ipc_server.register_handler('perception_events', handle_perception_events)
+        self.ipc_server.register_handler('perception_urgent', handle_perception_urgent)
+        self.ipc_server.register_handler('perception_scan', handle_perception_scan)
 
         logger.info("IPC message handlers registered")
 
@@ -459,6 +513,9 @@ class BrainCoordinator:
         self.brain_tasks.append(asyncio.create_task(self._run_agent_loop()))
         self.brain_tasks.append(asyncio.create_task(self._run_reflex()))
         self.brain_tasks.append(asyncio.create_task(self._run_dream_monitor()))
+
+        # Start perception manager (background ticker + terrain loops)
+        await self.perception_manager.start()
         # Keep alive until shutdown
         try:
             while not self.shutdown_requested:
@@ -521,6 +578,7 @@ class BrainCoordinator:
         logger.info("Shutting down brain coordinator...")
         self.agent_loop.running = False
         self.reflex_layer.stop()
+        await self.perception_manager.stop()
         await self.cancel_all_tasks()
 
         # Crystallize working memory on shutdown

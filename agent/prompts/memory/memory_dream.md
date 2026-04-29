@@ -2,7 +2,7 @@
 
 ## 候选
 
-{candidates}
+$CANDIDATES
 
 ## 裁决规则
 

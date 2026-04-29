@@ -1,0 +1,182 @@
+"""
+PerceptionManager — Coordinates two independent perception pipelines.
+
+  1. EventTicker (every 2s, pure code):
+     Consumes discrete events (entity/sound/block/weather) from PerceptionBuffer
+     → aggregates → writes observation to WorkingMemory.
+
+  2. TerrainAnalyzer (every 30s, Flash LLM):
+     Receives scan snapshots from JS via handle_scan() (separate channel)
+     → every 30s checks latest scan → terrain description → WorkingMemory.
+
+Scan data and event data never mix. Scans are snapshots, not continuous.
+"""
+
+import asyncio
+import logging
+from typing import Optional
+
+from .perception_buffer import PerceptionBuffer
+from .event_ticker import EventTicker
+
+logger = logging.getLogger(__name__)
+
+
+class PerceptionManager:
+    """Coordinates perception buffer, EventTicker, and (optionally) TerrainAnalyzer."""
+
+    def __init__(self, memory_router, llm=None,
+                 get_position=None,
+                 ticker_interval: float = 2.0,
+                 terrain_interval: float = 30.0,
+                 prompt_logger=None,
+                 prompt_manager=None):
+        self.buffer = PerceptionBuffer(max_size=500)
+        self.ticker = EventTicker()
+        self.memory_router = memory_router
+        self._get_position = get_position  # () → {'x','y','z'} | None
+
+        # TerrainAnalyzer is optional (requires LLM)
+        self.terrain_analyzer = None
+        if llm:
+            from .terrain_analyzer import TerrainAnalyzer
+            self.terrain_analyzer = TerrainAnalyzer(llm, prompt_logger=prompt_logger, prompt_manager=prompt_manager)
+
+        # Scan snapshots (separate from event buffer — scans are snapshots, not events)
+        self._scan_samples: list = []
+        self._block_stats: Optional[dict] = None
+        self._scan_generation = 0          # incremented each time new scan arrives
+        self._last_analyzed_generation = -1
+
+        self._ticker_interval = ticker_interval
+        self._terrain_interval = terrain_interval
+        self._terrain_failures = 0
+
+        self._running = False
+        self._ticker_task: Optional[asyncio.Task] = None
+        self._terrain_task: Optional[asyncio.Task] = None
+
+    # ---- lifecycle ----
+
+    async def start(self):
+        """Start background loops."""
+        self._running = True
+        self._ticker_task = asyncio.create_task(self._ticker_loop())
+        if self.terrain_analyzer:
+            self._terrain_task = asyncio.create_task(self._terrain_loop())
+        logger.info("PerceptionManager started (ticker=%.0fs, terrain=%.0fs)",
+                    self._ticker_interval, self._terrain_interval)
+
+    async def stop(self):
+        """Stop background loops."""
+        self._running = False
+        for task in (self._ticker_task, self._terrain_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        logger.info("PerceptionManager stopped")
+
+    # ---- scan input (separate channel from events) ----
+
+    def handle_scan(self, scan_type: str, data: dict):
+        """Receive a scan snapshot from JS PerceptionWorker.
+
+        Called from brain_coordinator's perception_scan IPC handler.
+        Scans are snapshots, not continuous events — they don't go through the event buffer.
+        """
+        if scan_type == 'full_scan':
+            samples = data.get('samples', [])
+            if samples:
+                self._scan_samples = samples
+                self._scan_generation += 1
+        elif scan_type == 'block_stats':
+            self._block_stats = data.get('stats', {})
+
+    # ---- ticker loop (every 2s, pure code, events only) ----
+
+    async def _ticker_loop(self):
+        while self._running:
+            try:
+                await asyncio.sleep(self._ticker_interval)
+                if self.buffer.is_empty:
+                    continue
+                events = await self.buffer.consume()
+                text = self.ticker.aggregate(events)
+                if text:
+                    self._write_observation(text)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"EventTicker loop error: {e}", exc_info=True)
+
+    # ---- terrain loop (every 30s, Flash LLM, scan snapshots only) ----
+
+    async def _terrain_loop(self):
+        while self._running:
+            try:
+                await asyncio.sleep(self._terrain_interval)
+                await self._maybe_analyze_terrain()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"TerrainAnalyzer loop error: {e}", exc_info=True)
+
+    async def _maybe_analyze_terrain(self):
+        """Check if we have a fresh scan snapshot worth analyzing."""
+        if not self.terrain_analyzer:
+            return
+        if not self._scan_samples:
+            return
+        # Skip if no new scan data since last analysis
+        if self._scan_generation <= self._last_analyzed_generation:
+            return
+
+        pos = self._get_position() if self._get_position else None
+        biome = 'unknown'
+        time_label = 'Day'
+        # Try to read biome/time from memory context (best-effort)
+        try:
+            ctx = self.memory_router.working_memory.context
+            biome = ctx.get('biome', 'unknown')
+            time_label = ctx.get('time_label', 'Day')
+        except Exception:
+            pass
+
+        scan_data = {
+            'ray_samples': self._scan_samples,
+            'block_stats': self._block_stats,
+            'biome': biome,
+            'time_label': time_label,
+        }
+
+        try:
+            text = await self.terrain_analyzer.analyze(scan_data)
+            self._last_analyzed_generation = self._scan_generation
+            if text:
+                self._write_observation(text)
+                self._terrain_failures = 0
+        except Exception as e:
+            self._terrain_failures += 1
+            logger.warning(f"Terrain analysis failed ({self._terrain_failures}/3): {e}")
+
+    # ---- helpers ----
+
+    def _write_observation(self, text: str):
+        """Write an observation to WorkingMemory (consolidate_weight=0)."""
+        try:
+            self.memory_router.log(
+                entry_type='observation',
+                content=text,
+                consolidate_weight=0
+            )
+        except Exception as e:
+            logger.error(f"Failed to write observation: {e}")
+
+    @staticmethod
+    def _distance(a: dict, b: dict) -> float:
+        return ((a.get('x', 0) - b.get('x', 0)) ** 2 +
+                (a.get('y', 0) - b.get('y', 0)) ** 2 +
+                (a.get('z', 0) - b.get('z', 0)) ** 2) ** 0.5

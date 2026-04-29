@@ -115,13 +115,13 @@ class ExecutionLayer:
 
             # Log the prompt
             prompt_file = self.prompt_logger.log_prompt(
-                prompt=f"【System Prompt】\n{system_prompt}\n\n【User Message】\n执行步骤：{step_description}",
+                prompt=f"【System Prompt】\n{system_prompt}\n\n【User Message】\n来自高层模型的行动描述：{step_description}",
                 brain_layer="ExecutionLayer",
                 prompt_type="execute_step"
             )
 
             # 2. Call Coding LLM
-            messages = [{"role": "user", "content": f"执行步骤：{step_description}"}]
+            messages = [{"role": "user", "content": f"来自高层模型的行动描述：{step_description}"}]
             response = await self.coding_llm.send_request(messages, system_prompt=system_prompt)
 
             # Update prompt log with response

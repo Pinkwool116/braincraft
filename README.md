@@ -355,5 +355,55 @@ agent/bridge/node_modules/minecraft-data/minecraft-data/data/pc/1.21.8/protocol.
 
 ---
 
-**更新日期**: 2026-03-26  
+### mineflayer-pathfinder：门/栅栏门交互时物理 tick 空指针崩溃
+
+**现象**：Bot 在执行包含开门/开栅栏门的寻路路径时，Node.js 进程直接崩溃。日志显示 bot 成功完成门交互后立即崩溃：
+
+```
+Code executed: Placed oak_door at (-28, 65, 74).
+Successfully placed oak door at the entrance
+
+TypeError: Cannot read properties of undefined (reading 'y')
+    at EventEmitter.monitorMovement (mineflayer-pathfinder/index.js:538)
+    at EventEmitter.emit (node:events:531:35)
+    at tickPhysics (mineflayer/lib/plugins/physics.js:82:11)
+```
+
+**根本原因**：`mineflayer-pathfinder` 的 `monitorMovement` 注册在 `physicsTick` 事件上。当寻路路径包含 `useOne` 动作（门/栅栏门）时，`bot.activateBlock()` 异步激活方块，回调中 `placingBlock` 被替换为队列中的下一个路径点。在门交互完成的瞬间，`bot.entity.position.floored()` 可能返回 `undefined`，而 `monitorMovement` 直接访问 `.y` 属性，未做空值检查导致崩溃。同样的问题也存在于 bot 死亡后 `bot.entity` 变为 `null` 的场景。
+
+**手动修复步骤**：
+
+打开 `agent/bridge/node_modules/mineflayer-pathfinder/index.js`，修改三处：
+
+**1. 第 419 行 `monitorMovement` 函数入口** — 添加总守卫：
+
+```js
+function monitorMovement () {
+  if (!bot.entity || !bot.entity.position) return  // ← 新增
+  // Test freemotion
+```
+
+**2. 第 538 行** — 放置方块时加空值判断（约第 539 行）：
+
+```js
+// 修改前：
+if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.y === bot.entity.position.floored().y - 1 && placingBlock.dy === 0) {
+// 修改后：
+if (bot.pathfinder.LOSWhenPlacingBlocks && bot.entity && bot.entity.position && placingBlock.y === bot.entity.position.floored().y - 1 && placingBlock.dy === 0) {
+```
+
+**3. 第 544 行** — 跳跃放置时加空值判断：
+
+```js
+// 修改前：
+canPlace = placingBlock.y + 1 < bot.entity.position.y
+// 修改后：
+canPlace = bot.entity && bot.entity.position && placingBlock.y + 1 < bot.entity.position.y
+```
+
+> 注意：每次执行 `npm install` 后，`node_modules` 目录会被重置，需要重新手动修复。建议使用 `patch-package` 持久化此补丁。
+
+---
+
+**更新日期**: 2026-04-29  
 **基于核心**: [MindCraft](https://github.com/mindcraft-bots/mindcraft)

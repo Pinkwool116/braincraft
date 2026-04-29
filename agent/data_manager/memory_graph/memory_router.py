@@ -35,7 +35,8 @@ class MemoryRouter:
 
     def __init__(self, agent_name: str, enable_logging: bool = True,
                  embedding_config: Dict = None, llm=None,
-                 game_time_provider=None, memory_config: Dict = None):
+                 game_time_provider=None, memory_config: Dict = None,
+                 prompt_manager=None):
         self.agent_name = agent_name
         self._game_time_provider = game_time_provider
         self._cfg = memory_config or {}
@@ -54,6 +55,9 @@ class MemoryRouter:
         # 记忆操作专用 LLM（压缩 + 反思蒸馏）
         self.llm = llm
 
+        # 提示词管理器（统一加载方式）
+        self.prompt_manager = prompt_manager
+
         # 动态获取 bots_dir
         from pathlib import Path
         project_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -61,49 +65,6 @@ class MemoryRouter:
 
         # 日志
         self.prompt_logger = PromptLogger(bots_dir, agent_name, enabled=enable_logging)
-
-        # 预加载反思提示词模板
-        prompt_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "memory", "memory_graph_extraction.md"
-        )
-        self.extraction_prompt_template = ""
-        try:
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                self.extraction_prompt_template = f.read()
-        except Exception as e:
-            logger.warning(f"未能加载记忆图谱抽取提示词模板: {e}")
-
-        # 预加载工作记忆压缩提示词模板
-        consolidation_prompt_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "memory", "working_memory_consolidation.md"
-        )
-        self.consolidation_prompt_template = ""
-        try:
-            with open(consolidation_prompt_path, "r", encoding="utf-8") as f:
-                self.consolidation_prompt_template = f.read()
-        except Exception as e:
-            logger.warning(f"未能加载工作记忆压缩提示词模板: {e}")
-
-        # Dream 反思模板（Phase 3 使用，Phase 1 预加载）
-        self.dream_prompt_template = ""
-        dream_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "memory", "memory_dream.md"
-        )
-        try:
-            with open(dream_path, "r", encoding="utf-8") as f:
-                self.dream_prompt_template = f.read()
-        except Exception:
-            logger.debug("memory_dream.md 尚未创建，dream 功能将在 Phase 3 启用")
-
-        self.clustering_prompt_template = ""
-        cluster_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "memory", "community_clustering.md"
-        )
-        try:
-            with open(cluster_path, "r", encoding="utf-8") as f:
-                self.clustering_prompt_template = f.read()
-        except Exception:
-            logger.debug("community_clustering.md 尚未创建，聚类功能将在 Phase 3 启用")
 
         # Dream 状态（Phase 3 使用，Phase 1 仅声明）
         self._dream_instance = None
@@ -136,7 +97,7 @@ class MemoryRouter:
 
     def log(self, entry_type: str, content: str, detail: str = None,
             game_state: Dict[str, Any] = None, metadata: Dict[str, Any] = None,
-            preserve: bool = False):
+            preserve: bool = False, consolidate_weight: int = 1):
         """
         向工作记忆追加一条记录（替代旧的 experience() 方法）。
 
@@ -150,9 +111,11 @@ class MemoryRouter:
             game_state: 可选的当前游戏状态快照
             metadata: 可选的结构化补充数据（如LLM推理、关键代码调用等）
             preserve: 若为True，该条目在滚动压缩时不会被压缩，原封保留
+            consolidate_weight: 1=计入consolidate触发配额, 0=不计入(observation)
         """
         self.working_memory.append(entry_type, content, detail, game_state,
-                                   metadata=metadata, preserve=preserve)
+                                   metadata=metadata, preserve=preserve,
+                                   consolidate_weight=consolidate_weight)
 
     def end_task(self, result: str, summary: str = ""):
         """
@@ -178,8 +141,8 @@ class MemoryRouter:
         if not self.llm:
             logger.warning("未配置 memory LLM，跳过 consolidate")
             return
-        if not self.consolidation_prompt_template:
-            logger.warning("缺少压缩提示词模板，跳过 consolidate")
+        if not self.prompt_manager:
+            logger.warning("缺少 PromptManager，跳过 consolidate")
             return
 
         new_entries, current_summary = self.working_memory.get_entries_for_consolidation()
@@ -197,12 +160,17 @@ class MemoryRouter:
         strategic = self.working_memory.context.get("strategic_reasoning", "")
         environment = self.working_memory.context.get("environment", "")
 
-        prompt = self.consolidation_prompt_template
-        prompt = prompt.replace("{goal}", goal)
-        prompt = prompt.replace("{strategic_reasoning}", strategic)
-        prompt = prompt.replace("{environment}", environment)
-        prompt = prompt.replace("{current_summary}", current_summary if current_summary else "（尚无摘要，这是第一次压缩）")
-        prompt = prompt.replace("{new_entries}", "\n".join(entry_lines))
+        prompt = await self.prompt_manager.render(
+            'memory/working_memory_consolidation.md',
+            context={
+                'GOAL': goal,
+                'STRATEGIC_REASONING': strategic,
+                'ENVIRONMENT': environment,
+                'CURRENT_SUMMARY': current_summary if current_summary else "（尚无摘要，这是第一次压缩）",
+                'NEW_ENTRIES': "\n".join(entry_lines),
+            },
+            strict=False
+        )
 
         prompt_file = self.prompt_logger.log_prompt(
             prompt=prompt,
@@ -262,17 +230,23 @@ class MemoryRouter:
             logger.debug("工作记忆为空，跳过 crystallize")
             return
 
-        if not self.extraction_prompt_template:
-            logger.error("缺少提示词模板，跳过 crystallize")
-            raise NotImplementedError("Extraction prompt template is required for crystallize")
+        if not self.prompt_manager:
+            logger.error("缺少 PromptManager，跳过 crystallize")
+            raise NotImplementedError("PromptManager is required for crystallize")
 
         async with self._write_lock:
             buffer_text = self.working_memory.get_buffer_text()
 
             existing_context = await self._get_existing_context_for_reflection()
 
-            prompt = self.extraction_prompt_template.replace("{buffer_text}", buffer_text)
-            prompt = prompt.replace("{existing_context}", existing_context)
+            prompt = await self.prompt_manager.render(
+                'memory/memory_graph_extraction.md',
+                context={
+                    'BUFFER_TEXT': buffer_text,
+                    'EXISTING_CONTEXT': existing_context,
+                },
+                strict=False
+            )
 
             prompt_file = self.prompt_logger.log_prompt(
                 prompt=prompt,
@@ -623,12 +597,13 @@ class MemoryRouter:
             if self._dream_instance is None:
                 self._dream_instance = GraphDream(
                     engine=self.engine, embedding=self.embedding,
-                    llm=self.llm, prompt_template=self.dream_prompt_template,
-                    config=cfg)
+                    llm=self.llm, prompt_manager=self.prompt_manager,
+                    config=cfg, prompt_logger=self.prompt_logger)
             if self._cluster_instance is None:
                 self._cluster_instance = GraphCluster(
                     engine=self.engine, llm=self.llm,
-                    prompt_template=self.clustering_prompt_template)
+                    prompt_manager=self.prompt_manager,
+                    prompt_logger=self.prompt_logger)
 
             community_count = 0
             dupes_found = 0

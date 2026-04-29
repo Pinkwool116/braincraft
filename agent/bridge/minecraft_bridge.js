@@ -35,6 +35,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import Vec3 from 'vec3';
 
+// Import PerceptionWorker for passive environment monitoring
+import { PerceptionWorker } from './perception_worker.js';
+
 // Get directory path for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,6 +78,11 @@ class BrainBridge {
 
         // Interval handles
         this.stateUpdateInterval = null;
+
+        // Perception worker (passive environment monitoring)
+        this.perceptionWorker = null;
+        this._rawPerceptionEvents = [];
+        this._perceptionPushInterval = null;
     }
 
     async initIPC() {
@@ -552,6 +560,10 @@ class BrainBridge {
         console.log(`Reason: ${reason}`);
 
         try {
+            // Stop perception worker and push interval
+            if (this.perceptionWorker) { this.perceptionWorker.stop(); this.perceptionWorker = null; }
+            if (this._perceptionPushInterval) { clearInterval(this._perceptionPushInterval); this._perceptionPushInterval = null; }
+
             // Save final playtime
             console.log('Saving playtime...');
             this.savePlaytime();
@@ -905,6 +917,60 @@ class BrainBridge {
                 // Start state update loop (store handle for cleanup)
                 if (this.stateUpdateInterval) clearInterval(this.stateUpdateInterval);
                 this.stateUpdateInterval = setInterval(() => this.sendStateUpdate(), 1000);
+
+                // Start perception worker (passive environment monitoring)
+                this.perceptionWorker = new PerceptionWorker(
+                    this.bot,
+                    // onEvent — discrete perception events, accumulate for batch push
+                    (eventType, data) => {
+                        this._rawPerceptionEvents.push({
+                            event_type: eventType,
+                            data: data,
+                            timestamp: Date.now()
+                        });
+                    },
+                    // onUrgent — urgent threats, push immediately to Reflex Layer
+                    (urgentType, data) => {
+                        this.sendMessage({
+                            type: 'perception_urgent',
+                            data: {
+                                event_type: urgentType,
+                                data: data,
+                                timestamp: Date.now()
+                            }
+                        }).catch(() => {});
+                    },
+                    // onScan — terrain scan snapshot, push immediately (separate channel)
+                    (scanType, data) => {
+                        this.sendMessage({
+                            type: 'perception_scan',
+                            data: {
+                                scan_type: scanType,
+                                data: data,
+                                timestamp: Date.now()
+                            }
+                        }).catch(() => {});
+                    },
+                    {
+                        quickScanIntervalMs: 5000,
+                        fullScanIntervalMs: 30000,
+                        blockStatsIntervalMs: 60000,
+                        urgentCheckIntervalMs: 500
+                    }
+                );
+                this.perceptionWorker.start();
+
+                // Push accumulated perception events to Python every 3 seconds
+                if (this._perceptionPushInterval) clearInterval(this._perceptionPushInterval);
+                this._perceptionPushInterval = setInterval(() => {
+                    if (this._rawPerceptionEvents.length > 0) {
+                        const batch = this._rawPerceptionEvents.splice(0);
+                        this.sendMessage({
+                            type: 'perception_events',
+                            data: { events: batch }
+                        }).catch(() => {});
+                    }
+                }, 3000);
 
                 this.spawnInitialized = true;
             }

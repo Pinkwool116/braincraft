@@ -518,8 +518,17 @@ class AgentLoopLayer:
                 'agent_loop/interruption.md', context=context, strict=False
             )
 
+            prompt_file = self.prompt_logger.log_prompt(
+                prompt=prompt,
+                brain_layer="AgentLoop",
+                prompt_type="interruption_eval"
+            )
+
             messages = [{"role": "user", "content": prompt}]
             response = await self.llm.send_request(messages)
+
+            if prompt_file and response:
+                self.prompt_logger.update_response(prompt_file, response)
 
             return self._parse_interruption_response(response)
         except Exception as e:
@@ -683,13 +692,9 @@ class AgentLoopLayer:
         if not self.memory_manager:
             return
 
-        # Guard: require meaningful content before crystallizing
-        wm = self.memory_manager.working_memory
-        if len(wm.timeline) < 7:
-            return
-
         # Guard: require sufficient consolidations to ensure enough context
-        if self.memory_manager.consolidate_count_since_crystallize <= 10:
+        min_consolidations = self.config.get('memory', {}).get('crystallize_min_consolidations', 5)
+        if self.memory_manager.consolidate_count_since_crystallize <= min_consolidations:
             return
 
         tool_name = tool_call.get('tool')

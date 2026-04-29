@@ -216,6 +216,79 @@ class ReflexLayer:
         except asyncio.QueueFull:
             logger.warning(f"Reflex event queue full, dropping: {event_type}")
 
+    async def handle_perception_urgent(self, event_type: str, data: Dict[str, Any]):
+        """
+        Handle urgent perception threat pushed directly from PerceptionWorker.
+
+        These bypass the perception buffer and EventTicker — they need immediate
+        reflex response (combat, flee, stop movement).
+
+        Args:
+            event_type: 'hostile_close', 'lava_nearby', 'cliff_ahead', 'drowning'
+            data: Threat details (distance, direction, entity info, etc.)
+        """
+        logger.info(f"Urgent perception threat: {event_type} data={data}")
+
+        if event_type == 'hostile_close':
+            entity_name = data.get('name', 'unknown')
+            distance = data.get('distance', 0)
+            logger.warning(f"Hostile mob nearby: {entity_name} at {distance} blocks")
+            self._log_reflex('hostile_close',
+                             f"感知层紧急预警: {entity_name} 出现在 {data.get('direction', '?')}侧{distance}格处")
+            # Trigger combat reflex immediately
+            await self.handle_combat({
+                'enemy_type': entity_name,
+                'distance': distance,
+                'entity_id': data.get('entity_id')
+            })
+
+        elif event_type == 'lava_nearby':
+            distance = data.get('distance', 0)
+            direction = data.get('direction', 'forward')
+            logger.warning(f"Lava nearby: {direction} at {distance} blocks")
+            self._log_reflex('lava_nearby',
+                             f"感知层紧急预警: {direction}方向{distance}格处检测到熔岩")
+            # Cancel pathfinding, back up
+            try:
+                await self.ipc_server.send_command({
+                    'type': 'execute_code',
+                    'data': {
+                        'code': """
+                            bot.pathfinder.setGoal(null);
+                            await skills.moveAway(bot, 5);
+                            log(bot, "Backed away from lava!");
+                        """,
+                        'no_response': True
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Lava reflex error: {e}")
+
+        elif event_type == 'cliff_ahead':
+            distance = data.get('distance', 0)
+            logger.warning(f"Cliff ahead at {distance} blocks")
+            self._log_reflex('cliff_ahead',
+                             f"感知层紧急预警: 前方{distance}格处检测到悬崖")
+            # Cancel pathfinding
+            try:
+                await self.ipc_server.send_command({
+                    'type': 'execute_code',
+                    'data': {
+                        'code': """
+                            bot.pathfinder.setGoal(null);
+                            log(bot, "Stopped at cliff edge!");
+                        """,
+                        'no_response': True
+                    }
+                })
+            except Exception as e:
+                logger.error(f"Cliff reflex error: {e}")
+
+        elif event_type == 'drowning':
+            logger.warning("Drowning detected by perception worker")
+            self._log_reflex('drowning_perception', '感知层紧急预警: 检测到溺水')
+            await self._handle_drowning({'oxygen': data.get('oxygen', 'unknown')})
+
     async def _process_event(self, event: Dict[str, Any]):
         """Process a single event from the queue."""
         event_type = event.get('type')

@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 class GraphCluster:
     """社区聚类：发现紧密子图并生成 Community Node。"""
 
-    def __init__(self, engine: GraphEngine, llm=None, prompt_template: str = ""):
+    def __init__(self, engine: GraphEngine, llm=None, prompt_manager=None, prompt_logger=None):
         self.engine = engine
         self.llm = llm
-        self.prompt_template = prompt_template
+        self.prompt_manager = prompt_manager
+        self.prompt_logger = prompt_logger
 
     def find_communities(self, min_size: int = 3) -> List[List[str]]:
         """
@@ -76,11 +77,12 @@ class GraphCluster:
         Returns:
             新创建的 Community Node 列表
         """
-        if not self.llm or not self.prompt_template:
-            logger.warning("No LLM or prompt template for community clustering")
+        if not self.llm or not self.prompt_manager:
+            logger.warning("No LLM or prompt manager for community clustering")
             return []
 
         existing_summaries = {n.content for n in existing_community_nodes}
+        existing_text = "\n".join(f"- {s}" for s in existing_summaries) if existing_summaries else "暂无已有社区"
         new_nodes = []
 
         for comm_ids in communities:
@@ -88,19 +90,31 @@ class GraphCluster:
             if not info:
                 continue
 
-            prompt = self.prompt_template
-            prompt = prompt.replace("{community_nodes}", info)
-            prompt = prompt.replace(
-                "{existing_communities}",
-                "\n".join(f"- {s}" for s in existing_summaries)
-                if existing_summaries else "暂无已有社区"
+            prompt = await self.prompt_manager.render(
+                'memory/community_clustering.md',
+                context={
+                    'COMMUNITY_NODES': info,
+                    'EXISTING_COMMUNITIES': existing_text,
+                },
+                strict=False
             )
 
             try:
+                prompt_file = None
+                if self.prompt_logger:
+                    prompt_file = self.prompt_logger.log_prompt(
+                        prompt=prompt,
+                        brain_layer="memory_graph",
+                        prompt_type="community_cluster"
+                    )
+
                 response = await self.llm.send_request(
                     [{"role": "user", "content": prompt}]
                 )
                 response = response.strip()
+
+                if prompt_file and response:
+                    self.prompt_logger.update_response(prompt_file, response)
 
                 # 解析: 社区名称 | 社区摘要 | ID1, ID2, ID3
                 parts = response.split("|")

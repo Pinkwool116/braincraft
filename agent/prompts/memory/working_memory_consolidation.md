@@ -1,9 +1,9 @@
 你是一个Minecraft智能体的工作记忆压缩助手。你的任务是将现有的经历摘要与新增的工作记忆条目融合，生成一份更新后的完整摘要。该摘要将全量替换旧摘要。
 
 ## 当前任务背景
-目标: {goal}
-战略分析: {strategic_reasoning}
-环境: {environment}
+目标: $GOAL
+战略分析: $STRATEGIC_REASONING
+环境: $ENVIRONMENT
 
 ## 工作记忆条目结构说明
 
@@ -19,10 +19,10 @@
 标记为[重要/PRESERVED]的条目包含特别关键的信息。
 
 ## 当前已有摘要
-{current_summary}
+$CURRENT_SUMMARY
 
 ## 新增的工作记忆条目
-{new_entries}
+$NEW_ENTRIES
 
 ## 压缩规则
 
