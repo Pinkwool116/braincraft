@@ -518,4 +518,13 @@ Example: if (world.shouldPlaceTorch(bot)) { /* place torch */ }
 Get list of items that can be crafted with current inventory
 Returns: Array of craftable item names
 Example: let craftable = world.getCraftableItems(bot);
+
+### Block metadata
+
+Block objects from world.* functions have a `metadata` property (integer 0-15):
+- Most natural blocks (dirt, stone, log, etc.): metadata = 0
+- Water / Lava: metadata = 0 means source block, metadata = 1-7 means flowing (higher = stronger flow)
+  - To check if a water block is a source: `block.name === 'water' && block.metadata === 0`
+  - To check if it's flowing: `block.name === 'water' && block.metadata > 0`
+- Directional blocks (furnace, chest, door, etc.): metadata encodes facing direction — use `bot.blockAt()` to inspect
 """

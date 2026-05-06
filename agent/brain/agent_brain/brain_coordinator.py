@@ -22,6 +22,7 @@ from ..tools.wait_tool import WaitTool
 from ..tools.plan_tool import PlanTool
 from ..tools.draft_tool import DraftTool
 from ..tools.todolist_tool import TodolistTool
+from ..tools.scan_terrain_tool import ScanTerrainTool
 from ..task_manager import ChatLogManager, PlanManager, DraftManager, TodoListStore
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
@@ -201,6 +202,9 @@ class BrainCoordinator:
             perception_llm_config = self._resolve_model(perception_llm_config.copy())
             self._inject_api_keys(perception_llm_config)
             perception_llm = create_llm_model(perception_llm_config)
+        async def _request_scan():
+            await self.ipc_server.send_command({'type': 'trigger_full_scan'})
+
         self.perception_manager = PerceptionManager(
             memory_router=self.memory_manager,
             llm=perception_llm,
@@ -208,6 +212,9 @@ class BrainCoordinator:
             terrain_interval=perception_config.get('terrain_interval', 30.0),
             prompt_logger=self.prompt_logger,
             prompt_manager=self.prompt_manager,
+            get_health=lambda: self.shared_state._state.get('health', 20),
+            get_food=lambda: self.shared_state._state.get('food', 20),
+            request_scan=_request_scan,
         )
         logger.info("PerceptionManager initialized")
 
@@ -501,6 +508,8 @@ class BrainCoordinator:
 
         idle_interval = self.config.get('agent_loop', {}).get('idle_interval_seconds', 30)
         self.tool_registry.register('wait', WaitTool(default_wait_seconds=idle_interval))
+
+        self.tool_registry.register('scan_terrain', ScanTerrainTool(self.perception_manager))
 
         logger.info(f"Registered {len(self.tool_registry._tools)} tools")
 

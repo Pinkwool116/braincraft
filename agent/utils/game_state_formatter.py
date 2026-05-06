@@ -93,40 +93,35 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
     @staticmethod
     def format_nearby_blocks(state: Dict[str, Any]) -> str:
         """
-        Format nearby blocks list with water/lava state details.
-        Like original MindCraft's getNearbyBlockTypes.
-        
+        Format nearby blocks list with coordinates for each block.
+
         Args:
             state: Game state dictionary
-            
+
         Returns:
-            Formatted nearby blocks string (bullet list)
+            Formatted nearby blocks string (bullet list with coordinates)
         """
         nearby_blocks = state.get('nearby_blocks', [])
-        
+
         if not nearby_blocks or not isinstance(nearby_blocks, list):
             return "- No block scan data"
-        
-        # Get unique block types (like original getNearbyBlockTypes)
-        block_types: Set[str] = set()
-        
+
+        lines = []
         for block in nearby_blocks:
             block_name = block.get('name', 'unknown')
-            
-            # Add water/lava state info like original
-            if block_name in ['water', 'lava']:
+            pos = block.get('position', {})
+            x = pos.get('x', '?')
+            y = pos.get('y', '?')
+            z = pos.get('z', '?')
+
+            if block_name in ('water', 'lava'):
                 metadata = block.get('metadata', 0)
                 state_str = 'source' if metadata == 0 else 'flowing'
-                details = f"{block_name} ({state_str})"
-                block_types.add(details)
+                lines.append(f"- {block_name} ({state_str}) ({x},{y},{z})")
             else:
-                block_types.add(block_name)
-        
-        if not block_types:
-            return "- None"
-        
-        # Format as bullet list, sorted for consistency
-        return '\n'.join([f"- {name}" for name in sorted(block_types)])
+                lines.append(f"- {block_name} ({x},{y},{z})")
+
+        return '\n'.join(lines) if lines else "- None"
     
     @staticmethod
     def format_nearby_entities(state: Dict[str, Any]) -> str:

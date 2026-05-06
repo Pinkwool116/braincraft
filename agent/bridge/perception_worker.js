@@ -139,6 +139,7 @@ export class PerceptionWorker {
       this._onSoundHeard(soundName, position, volume, pitch);
     this._handlers.playerJoined = (player) => this._onPlayerJoined(player);
     this._handlers.playerLeft = (player) => this._onPlayerLeft(player);
+    this._handlers.playerCollect = (collector, collected) => this._onPlayerCollect(collector, collected);
     this._handlers.rain = () => this._onWeatherChange();
 
     this.bot.on('entitySpawn', this._handlers.entitySpawn);
@@ -148,6 +149,7 @@ export class PerceptionWorker {
     this.bot.on('soundEffectHeard', this._handlers.soundEffectHeard);
     this.bot.on('playerJoined', this._handlers.playerJoined);
     this.bot.on('playerLeft', this._handlers.playerLeft);
+    this.bot.on('playerCollect', this._handlers.playerCollect);
     // rain event: some versions fire with no args, some don't fire at all
     // we also check weather changes in urgent check loop
     try { this.bot.on('rain', this._handlers.rain); } catch (_) { /* ignore if unsupported */ }
@@ -162,6 +164,7 @@ export class PerceptionWorker {
     this.bot.removeListener('soundEffectHeard', this._handlers.soundEffectHeard);
     this.bot.removeListener('playerJoined', this._handlers.playerJoined);
     this.bot.removeListener('playerLeft', this._handlers.playerLeft);
+    this.bot.removeListener('playerCollect', this._handlers.playerCollect);
     try { this.bot.removeListener('rain', this._handlers.rain); } catch (_) { /* ignore */ }
   }
 
@@ -205,6 +208,32 @@ export class PerceptionWorker {
       distance: dist
     });
 
+    // Detect item entities and extract the actual item name from metadata key 7
+    let isItem = false;
+    let itemName = null;
+    if (entity.type === 'object' && (entity.name === 'Item' || entity.name === 'item')) {
+      try {
+        // Mineflayer metadata is [{key, value}, ...] — find by key, not array index
+        let slot = null;
+        const meta = entity.metadata;
+        if (meta) {
+          if (Array.isArray(meta)) {
+            const entry = meta.find(m => m.key === 7);
+            slot = entry ? entry.value : null;
+          } else {
+            slot = meta[7];
+          }
+        }
+        if (slot) {
+          const itemId = slot.itemId != null ? slot.itemId : (slot.blockId != null ? slot.blockId : null);
+          if (itemId != null && this.bot && this.bot.registry && this.bot.registry.items) {
+            const item = this.bot.registry.items[itemId];
+            if (item) { itemName = item.name; isItem = true; }
+          }
+        }
+      } catch (_) { /* metadata access can fail, silently fall through */ }
+    }
+
     this.onEvent('entity_spawn', {
       entity_id: entity.id,
       name: entity.name || entity.username || 'unknown',
@@ -212,7 +241,9 @@ export class PerceptionWorker {
       position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
       distance: Math.round(dist),
       direction: this._directionTo(entity.position),
-      is_hostile: HOSTILE_MOBS.has(entity.name)
+      is_hostile: HOSTILE_MOBS.has(entity.name),
+      is_item: isItem,
+      item_name: itemName || entity.name
     });
   }
 
@@ -229,6 +260,45 @@ export class PerceptionWorker {
       entity_id: entity.id,
       name: known.name,
       type: entity.type
+    });
+  }
+
+  _onPlayerCollect(collector, collected) {
+    if (!this._running || !this.bot?.entity) return;
+    // Only track items collected by our own bot
+    if (collector !== this.bot.entity) return;
+
+    // Extract the actual item name from the collected entity's metadata key 7
+    let itemName = collected.name || 'unknown';
+    let count = 1;
+    try {
+      let slot = null;
+      const meta = collected.metadata;
+      if (meta) {
+        if (Array.isArray(meta)) {
+          const entry = meta.find(m => m.key === 7);
+          slot = entry ? entry.value : null;
+        } else {
+          slot = meta[7];
+        }
+      }
+      if (slot) {
+        count = slot.count || 1;
+        const itemId = slot.itemId != null ? slot.itemId : (slot.blockId != null ? slot.blockId : null);
+        if (itemId != null && this.bot?.registry?.items) {
+          const item = this.bot.registry.items[itemId];
+          if (item) itemName = item.name;
+        }
+      }
+    } catch (_) { /* fall through with defaults */ }
+
+    const dist = collected.position.distanceTo(this.bot.entity.position);
+
+    this.onEvent('item_picked_up', {
+      item_name: itemName,
+      count: count,
+      distance: Math.round(dist),
+      direction: this._directionTo(collected.position)
     });
   }
 
@@ -385,6 +455,13 @@ export class PerceptionWorker {
     }
     // Full scan is a terrain snapshot — independent channel, not mixed with events
     if (this.onScan) this.onScan('full_scan', { samples });
+  }
+
+  // ---- Public method for on-demand scan ----
+
+  forceFullScan() {
+    if (!this._running || !this.bot?.entity) return;
+    this._doFullScan();
   }
 
   /**

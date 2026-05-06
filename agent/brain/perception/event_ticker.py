@@ -41,6 +41,9 @@ class EventTicker:
         self.max_sounds = max_sounds
         # Cross-tick entity tracking: entity_id → {name, type, first_seen, last_seen}
         self._known_entities: dict = {}
+        # Vitals tracking for change detection
+        self._prev_health: Optional[float] = None
+        self._prev_food: Optional[float] = None
 
     def aggregate(self, events: list) -> Optional[str]:
         """
@@ -48,6 +51,8 @@ class EventTicker:
         Returns None if nothing worth recording happened.
         """
         new_entities = []
+        item_drops = []
+        pickups = []
         approaching = []
         gone_entities = []
         sounds = []
@@ -59,7 +64,7 @@ class EventTicker:
             data = event.get('data', {})
 
             if etype == 'entity_spawn':
-                self._handle_spawn(data, new_entities)
+                self._handle_spawn(data, new_entities, item_drops)
             elif etype == 'entity_approaching':
                 self._handle_approaching(data, approaching)
             elif etype == 'entity_gone':
@@ -70,6 +75,8 @@ class EventTicker:
                 weather_changes.append(data.get('new_weather', 'unknown'))
             elif etype == 'block_update':
                 self._handle_block_change(data, block_changes)
+            elif etype == 'item_picked_up':
+                self._handle_pickup(data, pickups)
 
         # Assemble output
         parts = []
@@ -79,6 +86,21 @@ class EventTicker:
             for e in new_entities[:self.max_entities]:
                 items.append(f"{e['name']}({e['direction']}{e['distance']}格)")
             parts.append(f"新实体: {', '.join(items)}")
+
+        if item_drops:
+            drops = []
+            for d in item_drops[:self.max_entities]:
+                drops.append(f"{d['item_name']}({d['direction']}{d['distance']}格)")
+            parts.append(f"掉落: {', '.join(drops)}")
+
+        if pickups:
+            items = []
+            for p in pickups[:self.max_entities]:
+                label = f"{p['item_name']}"
+                if p.get('count', 1) > 1:
+                    label += f" ×{p['count']}"
+                items.append(label)
+            parts.append(f"拾取: {', '.join(items)}")
 
         if approaching:
             items = []
@@ -119,23 +141,57 @@ class EventTicker:
         timestamp = datetime.now().strftime('%H:%M:%S')
         return f"[感知 {timestamp}] " + " | ".join(parts)
 
+    def check_vitals(self, health: float, food: float) -> Optional[str]:
+        """Compare current vitals against previous values, return change text if any."""
+        parts = []
+
+        if self._prev_health is not None and health != self._prev_health:
+            diff = health - self._prev_health
+            sign = '+' if diff > 0 else ''
+            parts.append(f"生命:{self._prev_health:.0f}→{health:.0f}({sign}{diff:.0f})")
+
+        if self._prev_food is not None and food != self._prev_food:
+            diff = food - self._prev_food
+            sign = '+' if diff > 0 else ''
+            parts.append(f"饥饿:{self._prev_food:.0f}→{food:.0f}({sign}{diff:.0f})")
+
+        self._prev_health = health
+        self._prev_food = food
+
+        if parts:
+            return f"[状态变化] " + " ".join(parts)
+        return None
+
     # ---- internal handlers ----
 
-    def _handle_spawn(self, data: dict, new_entities: list):
+    def _handle_spawn(self, data: dict, new_entities: list, item_drops: list):
         eid = data.get('entity_id')
         name = data.get('name', 'unknown')
+        is_item = data.get('is_item', False)
+        item_name = data.get('item_name', name)
+
         self._known_entities[eid] = {
             'name': name,
             'type': data.get('type', ''),
             'is_hostile': data.get('is_hostile', False),
+            'is_item': is_item,
+            'item_name': item_name,
             'first_seen': data.get('timestamp', 0),
             'last_seen': data.get('timestamp', 0),
         }
-        new_entities.append({
+
+        entry = {
             'name': name,
             'direction': data.get('direction', '?'),
             'distance': data.get('distance', 0),
-        })
+            'is_item': is_item,
+            'item_name': item_name,
+        }
+
+        if is_item:
+            item_drops.append(entry)
+        else:
+            new_entities.append(entry)
 
     def _handle_approaching(self, data: dict, approaching: list):
         eid = data.get('entity_id')
@@ -183,3 +239,9 @@ class EventTicker:
             block_changes.append(f"{old_b}→{new_b}({data.get('direction', '?')}{dist}格)")
         elif new_b == 'tnt' or old_b == 'tnt':
             block_changes.append(f"{old_b}→{new_b}({data.get('direction', '?')}{dist}格)")
+
+    def _handle_pickup(self, data: dict, pickups: list):
+        pickups.append({
+            'item_name': data.get('item_name', 'unknown'),
+            'count': data.get('count', 1),
+        })

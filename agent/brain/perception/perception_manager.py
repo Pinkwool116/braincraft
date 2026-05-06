@@ -27,6 +27,9 @@ class PerceptionManager:
 
     def __init__(self, memory_router, llm=None,
                  get_position=None,
+                 get_health=None,
+                 get_food=None,
+                 request_scan=None,
                  ticker_interval: float = 2.0,
                  terrain_interval: float = 30.0,
                  prompt_logger=None,
@@ -34,7 +37,10 @@ class PerceptionManager:
         self.buffer = PerceptionBuffer(max_size=500)
         self.ticker = EventTicker()
         self.memory_router = memory_router
-        self._get_position = get_position  # () → {'x','y','z'} | None
+        self._get_position = get_position    # () → {'x','y','z'} | None
+        self._get_health = get_health        # () → float | None
+        self._get_food = get_food            # () → float | None
+        self._request_scan = request_scan    # async () → None (triggers JS full scan)
 
         # TerrainAnalyzer is optional (requires LLM)
         self.terrain_analyzer = None
@@ -101,6 +107,19 @@ class PerceptionManager:
         while self._running:
             try:
                 await asyncio.sleep(self._ticker_interval)
+
+                # Check vitals changes every tick (independent of events)
+                if self._get_health and self._get_food:
+                    try:
+                        health = self._get_health()
+                        food = self._get_food()
+                        if health is not None and food is not None:
+                            vitals_text = self.ticker.check_vitals(health, food)
+                            if vitals_text:
+                                self._write_observation(vitals_text)
+                    except Exception:
+                        pass  # best-effort, don't block the ticker
+
                 if self.buffer.is_empty:
                     continue
                 events = await self.buffer.consume()
@@ -161,6 +180,58 @@ class PerceptionManager:
         except Exception as e:
             self._terrain_failures += 1
             logger.warning(f"Terrain analysis failed ({self._terrain_failures}/3): {e}")
+
+    async def force_analyze_terrain(self) -> Optional[str]:
+        """Force an immediate terrain analysis using the latest scan data.
+
+        Unlike _maybe_analyze_terrain, this does not check _scan_generation.
+        If no scan data is available, triggers a JS-side full scan and waits
+        for the data to arrive (up to 5s timeout).
+        Used by the scan_terrain tool for on-demand macro observation.
+        """
+        if not self.terrain_analyzer:
+            return None
+
+        if not self._scan_samples:
+            # Trigger JS-side full scan and wait for data
+            if self._request_scan:
+                try:
+                    await self._request_scan()
+                except Exception:
+                    pass  # best-effort, proceed to check if data arrived
+                # Wait for scan data, polling every 200ms, up to 5 seconds
+                import asyncio as _asyncio
+                for _ in range(25):
+                    await _asyncio.sleep(0.2)
+                    if self._scan_samples:
+                        break
+            if not self._scan_samples:
+                return None  # still no data after waiting
+
+        pos = self._get_position() if self._get_position else None
+        biome = 'unknown'
+        time_label = 'Day'
+        try:
+            ctx = self.memory_router.working_memory.context
+            biome = ctx.get('biome', 'unknown')
+            time_label = ctx.get('time_label', 'Day')
+        except Exception:
+            pass
+
+        scan_data = {
+            'ray_samples': self._scan_samples,
+            'block_stats': self._block_stats,
+            'biome': biome,
+            'time_label': time_label,
+        }
+
+        try:
+            text = await self.terrain_analyzer.analyze(scan_data)
+            self._last_analyzed_generation = self._scan_generation
+            return text
+        except Exception as e:
+            logger.warning(f"Forced terrain analysis failed: {e}")
+            return None
 
     # ---- helpers ----
 

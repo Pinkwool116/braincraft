@@ -154,6 +154,13 @@ class BrainBridge {
                 this.handleImmediateCommand(type, data);
                 break;
 
+            case 'trigger_full_scan':
+                // Python requested an immediate full terrain scan
+                if (this.perceptionWorker) {
+                    this.perceptionWorker.forceFullScan();
+                }
+                break;
+
             case 'request_state_update':
                 // Python requested fresh state - send it immediately
                 this.sendStateUpdate();
@@ -751,28 +758,16 @@ class BrainBridge {
         });
 
         const blocks = [];
-        // Track unique block types WITH metadata for water/lava
-        // Format: "water:0" (source) vs "water:1" (flowing)
-        const uniqueBlocks = new Set();
 
         for (const position of positions) {
             const block = this.bot.blockAt(position);
             if (!block) continue;
 
-            // For water/lava, include metadata to distinguish source vs flowing
-            // For other blocks, just use name
-            const blockKey = (block.name === 'water' || block.name === 'lava')
-                ? `${block.name}:${block.metadata || 0}`
-                : block.name;
-
-            if (!uniqueBlocks.has(blockKey)) {
-                uniqueBlocks.add(blockKey);
-                blocks.push({
-                    name: block.name,
-                    position: block.position,
-                    metadata: block.metadata || 0
-                });
-            }
+            blocks.push({
+                name: block.name,
+                position: block.position,
+                metadata: block.metadata || 0
+            });
         }
 
         return blocks;
