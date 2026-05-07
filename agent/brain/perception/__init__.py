@@ -1,7 +1,7 @@
 """
 Perception Module
 
-EventTicker (pure code, no LLM) + TerrainAnalyzer (Flash LLM, deferred).
+EventTicker (pure code, no LLM) + PerceptionLLM (Flash LLM, deferred).
 All observation entries write to WorkingMemory via MemoryRouter.
 """
 

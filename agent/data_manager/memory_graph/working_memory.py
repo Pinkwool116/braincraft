@@ -124,7 +124,7 @@ class WorkingMemoryBuffer:
             preserve: 若为True，该条目在滚动压缩时不会被压缩，原封保留
             consolidate_weight: 计入 consolidate 触发的权重。
                 1 = 正常计数（action, reasoning 等）
-                0 = 不计数（observation — 由 EventTicker/TerrainAnalyzer 写入，
+                0 = 不计数（observation — 由 EventTicker/PerceptionLLM 写入，
                     不应因为"周围路过几只羊"就触发记忆压缩）
         """
         entry = {

@@ -5,7 +5,7 @@ PerceptionManager — Coordinates two independent perception pipelines.
      Consumes discrete events (entity/sound/block/weather) from PerceptionBuffer
      → aggregates → writes observation to WorkingMemory.
 
-  2. TerrainAnalyzer (every 300s, Flash LLM):
+  2. PerceptionLLM (every 300s, Flash LLM):
      Receives scan snapshots from JS via handle_scan() (separate channel)
      → every 300s checks latest scan → terrain description → WorkingMemory.
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class PerceptionManager:
-    """Coordinates perception buffer, EventTicker, and (optionally) TerrainAnalyzer."""
+    """Coordinates perception buffer, EventTicker, and (optionally) PerceptionLLM."""
 
     def __init__(self, memory_router, llm=None,
                  get_position=None,
@@ -42,11 +42,11 @@ class PerceptionManager:
         self._get_food = get_food            # () → float | None
         self._request_scan = request_scan    # async (...) → None (triggers JS full scan)
 
-        # TerrainAnalyzer is optional (requires LLM)
-        self.terrain_analyzer = None
+        # PerceptionLLM is optional (requires LLM)
+        self.perception_llm = None
         if llm:
-            from .terrain_analyzer import TerrainAnalyzer
-            self.terrain_analyzer = TerrainAnalyzer(llm, prompt_logger=prompt_logger, prompt_manager=prompt_manager)
+            from .perception_llm import PerceptionLLM
+            self.perception_llm = PerceptionLLM(llm, prompt_logger=prompt_logger, prompt_manager=prompt_manager)
 
         # Scan snapshots (separate from event buffer — scans are snapshots, not events)
         self._scan_samples: list = []
@@ -68,7 +68,7 @@ class PerceptionManager:
         """Start background loops."""
         self._running = True
         self._ticker_task = asyncio.create_task(self._ticker_loop())
-        if self.terrain_analyzer:
+        if self.perception_llm:
             self._terrain_task = asyncio.create_task(self._terrain_loop())
         logger.info("PerceptionManager started (ticker=%.0fs, terrain=%.0fs)",
                     self._ticker_interval, self._terrain_interval)
@@ -141,11 +141,11 @@ class PerceptionManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"TerrainAnalyzer loop error: {e}", exc_info=True)
+                logger.error(f"PerceptionLLM loop error: {e}", exc_info=True)
 
     async def _maybe_analyze_terrain(self):
         """Check if we have a fresh scan snapshot worth analyzing."""
-        if not self.terrain_analyzer:
+        if not self.perception_llm:
             return
         if not self._scan_samples:
             return
@@ -172,7 +172,7 @@ class PerceptionManager:
         }
 
         try:
-            text = await self.terrain_analyzer.analyze(scan_data)
+            text = await self.perception_llm.analyze(scan_data)
             self._last_analyzed_generation = self._scan_generation
             if text:
                 self._write_observation(text)
@@ -193,7 +193,7 @@ class PerceptionManager:
         for the data to arrive (up to 5s timeout).
         Used by the scan_terrain tool for on-demand macro observation.
         """
-        if not self.terrain_analyzer:
+        if not self.perception_llm:
             return None
 
         start_generation = self._scan_generation
@@ -234,7 +234,7 @@ class PerceptionManager:
         }
 
         try:
-            text = await self.terrain_analyzer.analyze(scan_data)
+            text = await self.perception_llm.analyze(scan_data)
             self._last_analyzed_generation = self._scan_generation
             return {
                 'description': text,
@@ -248,6 +248,20 @@ class PerceptionManager:
         except Exception as e:
             logger.warning(f"Forced terrain analysis failed: {e}")
             return None
+
+    async def summarize_inspect_surroundings(
+            self,
+            summary_input: dict,
+            focus: str = "",
+    ) -> Optional[str]:
+        """Summarize an inspect_surroundings scan result via the terrain analyzer LLM.
+
+        Delegates to PerceptionLLM which owns the LLM, prompt_manager, and prompt_logger.
+        Mirrors force_analyze_terrain() — the tool is a thin wrapper, logic lives here.
+        """
+        if not self.perception_llm:
+            return None
+        return await self.perception_llm.summarize_inspect_surroundings(summary_input, focus)
 
     # ---- helpers ----
 

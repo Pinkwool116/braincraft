@@ -5,10 +5,9 @@ On-demand detailed observation for nearby blocks and entities.
 """
 
 import asyncio
-import json
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +24,13 @@ class InspectSurroundingsTool:
         "radius<=3 时返回完整匹配信息，适合查脚边、头顶、建筑/挖掘的精确坐标。"
         "radius>3 时必须提供 focus，工具会围绕重点摘要，适合找资源、敌人、洞口、路线或风险。"
         "scan_mode='all' 数据量很大，半径不要太大；radius>3 且 all 时尤其要写清 focus。"
-        "常用方块名示例: oak_log, birch_log, spruce_log, stone, coal_ore, iron_ore, "
-        "copper_ore, gold_ore, diamond_ore, water, lava, chest, crafting_table, furnace, "
-        "bed, wheat, torch, door, lever, button。"
-        "常用实体名示例: player, zombie, skeleton, creeper, spider, enderman, cow, sheep, "
-        "pig, chicken, villager, item, arrow。优先使用精确 Minecraft registry 名称。"
+        "常用方块名示例: oak_log, birch_log, spruce_log, stone, grass_block, dirt, sand, "
+        "gravel, cobblestone, deepslate, obsidian, coal_ore, iron_ore, copper_ore, gold_ore, "
+        "diamond_ore, oak_leaves, short_grass, water, lava, chest, crafting_table, furnace, "
+        "bed, wheat, torch, door, rail。"
+        "常用实体名示例: player, zombie, skeleton, creeper, spider, enderman, witch, slime, "
+        "cow, sheep, pig, chicken, horse, wolf, cat, villager, wandering_trader, item, arrow。"
+        "优先使用精确 Minecraft registry 名称。"
     )
 
     def __init__(self, ipc_server, perception_manager=None, timeout_seconds: float = 15.0):
@@ -147,7 +148,10 @@ class InspectSurroundingsTool:
         return result
 
     async def _summarize_large_scan(self, request: dict, result: dict) -> dict:
-        """Use perception LLM when available, then drop raw detail from large scans."""
+        """Delegate to PerceptionManager which owns the LLM summarization pipeline.
+
+        Follows the same pattern as ScanTerrainTool → PerceptionManager.force_analyze_terrain().
+        """
         summary_input = {
             "request": request,
             "summary": result.get("summary", {}),
@@ -155,24 +159,16 @@ class InspectSurroundingsTool:
             "invalid_targets": result.get("invalid_targets", []),
             "suggestions": result.get("suggestions", {}),
         }
+        focus = request.get("focus", "")
 
         llm_summary = None
-        analyzer = getattr(self.perception_manager, "terrain_analyzer", None)
-        llm = getattr(analyzer, "llm", None)
-        if llm:
-            prompt = (
-                "你是 Minecraft 环境观察摘要器。根据结构化扫描结果，用中文围绕观察重点总结。\n"
-                f"观察重点: {request.get('focus')}\n"
-                "要求: 提炼关键方块/实体数量、最近坐标、方向分布、风险、下一步行动建议。"
-                "不要编造扫描中没有的信息，保持简洁。\n\n"
-                f"扫描数据:\n{json.dumps(summary_input, ensure_ascii=False, indent=2)}"
-            )
+        if self.perception_manager:
             try:
-                response = await llm.send_request([{"role": "user", "content": prompt}])
-                if response:
-                    llm_summary = response.strip()
+                llm_summary = await self.perception_manager.summarize_inspect_surroundings(
+                    summary_input, focus
+                )
             except Exception as e:
-                logger.warning("inspect_surroundings LLM summary failed: %s", e)
+                logger.warning("inspect_surroundings summary via PerceptionManager failed: %s", e)
 
         compact = {
             "success": True,

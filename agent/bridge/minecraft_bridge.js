@@ -68,21 +68,61 @@ const RESOURCE_ENTITY_NAMES = new Set([
 ]);
 
 const IMPORTANT_BLOCK_EXACT = new Set([
-    'water', 'lava', 'fire', 'soul_fire', 'chest', 'trapped_chest', 'barrel',
-    'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'bed',
+    // Fluids & hazards
+    'water', 'lava', 'fire', 'soul_fire', 'cobweb',
+    // Containers
+    'chest', 'trapped_chest', 'barrel', 'shulker_box',
+    // Crafting & utility
+    'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'anvil',
+    'enchanting_table', 'brewing_stand', 'bookshelf',
+    // Beds
+    'bed',
+    // Light sources
     'torch', 'wall_torch', 'lantern', 'soul_torch', 'soul_lantern',
-    'lever', 'stone_button', 'oak_button', 'spruce_button', 'birch_button',
+    // Redstone
+    'lever', 'redstone_torch', 'redstone_wall_torch',
+    'stone_button', 'oak_button', 'spruce_button', 'birch_button',
     'jungle_button', 'acacia_button', 'dark_oak_button', 'mangrove_button',
     'cherry_button', 'bamboo_button', 'crimson_button', 'warped_button',
+    'note_block', 'observer', 'piston', 'sticky_piston', 'dispenser', 'dropper', 'hopper',
+    // Crops
     'wheat', 'carrots', 'potatoes', 'beetroots', 'melon', 'pumpkin',
-    'rail', 'powered_rail', 'detector_rail', 'activator_rail'
+    // Rails
+    'rail', 'powered_rail', 'detector_rail', 'activator_rail',
+    // Common surface blocks (verified against mc 1.21.8 registry)
+    'grass_block', 'dirt', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium', 'moss_block',
+    'sand', 'red_sand', 'gravel', 'clay',
+    // Common stone & variants
+    'stone', 'cobblestone', 'mossy_cobblestone',
+    'granite', 'diorite', 'andesite',
+    'deepslate', 'cobbled_deepslate', 'tuff', 'calcite', 'dripstone_block',
+    // Notable blocks
+    'obsidian', 'crying_obsidian', 'bedrock',
+    // Vegetation
+    'short_grass', 'tall_grass', 'fern', 'large_fern', 'dead_bush',
+    'vines', 'ladder', 'scaffolding',
+    // Ice & snow
+    'snow', 'snow_block', 'powder_snow', 'ice', 'packed_ice', 'blue_ice',
+    // Nether
+    'netherrack', 'soul_sand', 'soul_soil', 'blackstone', 'basalt', 'glowstone',
+    // End
+    'end_stone',
+    // Structures & useful
+    'spawner', 'beehive', 'bee_nest',
 ]);
 
 const IMPORTANT_BLOCK_PATTERNS = [
-    '_ore', '_log', '_stem', '_hyphae', 'door', 'trapdoor', 'pressure_plate',
-    'button', 'lever', 'chest', 'furnace', 'bed', 'torch', 'lantern',
-    'crafting_table', 'anvil', 'enchanting_table', 'brewing_stand',
-    'shulker_box', 'sign'
+    '_ore',           // all ores (coal_ore, deepslate_diamond_ore, etc.)
+    '_log',           // all logs (oak_log, stripped_birch_log, etc.)
+    '_wood',          // all wood (oak_wood, stripped_spruce_wood, etc.)
+    '_stem',          // nether stems (crimson_stem, warped_stem)
+    '_hyphae',        // nether hyphae
+    '_leaves',        // all leaves (oak_leaves, cherry_leaves, etc.)
+    'door',           // wooden/iron doors and trapdoors
+    'trapdoor',
+    'pressure_plate',
+    'sign',           // all standing/wall/hanging sign variants
+    'shulker_box',    // colored shulker box variants
 ];
 
 class BrainBridge {

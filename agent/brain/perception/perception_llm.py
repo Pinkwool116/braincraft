@@ -1,25 +1,26 @@
 """
-TerrainAnalyzer — Flash LLM terrain understanding (every 30s).
+PerceptionLLM — Flash LLM for perception understanding tasks.
 
-Consumes active scan data (ray samples + block stats) and produces
-a natural-language terrain description. Writes to WorkingMemory as observation.
+Handles all LLM-backed perception analysis:
+- Terrain analysis (every 30s): ray-scan data → natural-language terrain description
+- Inspect surroundings summarization (on-demand): scan results → focused summary
 
 This is the ONLY place Flash LLM is used in the perception pipeline.
 Event aggregation is handled by EventTicker (pure code, no LLM).
 """
 
+import json
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-class TerrainAnalyzer:
-    """Flash LLM terrain understanding from ray-scan data."""
+class PerceptionLLM:
+    """LLM-backed perception analysis: terrain understanding + inspect surroundings summarization."""
 
-    def __init__(self, llm, model: str = "deepseek-v4-flash", prompt_logger=None, prompt_manager=None):
+    def __init__(self, llm, prompt_logger=None, prompt_manager=None):
         self.llm = llm
-        self.model = model
         self.prompt_logger = prompt_logger
         self.prompt_manager = prompt_manager
         self._last_result: str = ""
@@ -89,11 +90,11 @@ class TerrainAnalyzer:
                 self._consecutive_failures = 0
                 return text
         except Exception as e:
-            logger.warning(f"TerrainAnalyzer Flash API error: {e}")
+            logger.warning(f"PerceptionLLM Flash API error: {e}")
 
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._max_failures:
-            logger.warning("TerrainAnalyzer degraded to template (3 consecutive failures)")
+            logger.warning("PerceptionLLM degraded to template (3 consecutive failures)")
             return self._template_fallback(scan_data)
         return None
 
@@ -121,6 +122,52 @@ class TerrainAnalyzer:
                 dir_text = '、'.join(f"{d}({c})" for d, c in sorted(dirs.items(), key=lambda x: -x[1])[:3])
                 lines.append(f"  - {name}: {count}个 ({dir_text})")
         return '\n'.join(lines)
+
+    async def summarize_inspect_surroundings(self, summary_input: dict, focus: str) -> Optional[str]:
+        """
+        Summarize an inspect_surroundings scan result via Flash LLM.
+
+        Args:
+            summary_input: {request, summary, samples, invalid_targets, suggestions}
+            focus: The observation focus from the original request.
+
+        Returns:
+            Natural-language summary text, or None on failure.
+        """
+        scan_data_json = json.dumps(summary_input, ensure_ascii=False, indent=2)
+
+        prompt = await self.prompt_manager.render(
+            'perception/inspect_surroundings_summary.md',
+            context={
+                'FOCUS': focus or '无特定重点，客观描述周围环境',
+                'SCAN_DATA': scan_data_json,
+            },
+            strict=False,
+        )
+
+        try:
+            prompt_file = None
+            if self.prompt_logger:
+                prompt_file = self.prompt_logger.log_prompt(
+                    prompt=prompt,
+                    brain_layer="perception",
+                    prompt_type="inspect_surroundings_summary",
+                )
+
+            response = await self.llm.send_request(
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = response.strip()
+
+            if prompt_file and text:
+                self.prompt_logger.update_response(prompt_file, text)
+
+            if text:
+                return text
+        except Exception as e:
+            logger.warning(f"inspect_surroundings LLM summary failed: {e}")
+
+        return None
 
     def _template_fallback(self, scan_data: dict) -> str:
         """Fallback template-based terrain description (no LLM)."""

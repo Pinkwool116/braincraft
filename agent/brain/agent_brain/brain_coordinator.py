@@ -195,7 +195,7 @@ class BrainCoordinator:
         )
         logger.info("MemoryRouter initialized")
 
-        # Perception manager (EventTicker + optional TerrainAnalyzer)
+        # Perception manager (EventTicker + optional PerceptionLLM)
         perception_config = config.get('perception', {})
         perception_llm_config = config.get('perception_llm')
         perception_llm = None
