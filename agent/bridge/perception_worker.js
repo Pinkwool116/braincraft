@@ -6,7 +6,7 @@
  *
  * Three duties:
  *   1. Passive event listening (entitySpawn, blockUpdate, soundEffectHeard, ...)
- *   2. Multi-tier active scanning (5s quick / 30s full / 60s block stats)
+ *   2. Active terrain scanning (full scan every 300s)
  *   3. Urgent threat detection → direct push to Reflex Layer
  *
  * Decoupled from BrainBridge via callbacks: onEvent(normal) + onUrgent(emergency).
@@ -40,9 +40,7 @@ export class PerceptionWorker {
     this.onUrgent = onUrgent;
     this.onScan = onScan;  // terrain scan snapshots — separate channel from events
     this.options = {
-      quickScanIntervalMs: 5000,
-      fullScanIntervalMs: 30000,
-      blockStatsIntervalMs: 60000,
+      fullScanIntervalMs: 300000,
       perceptionPushIntervalMs: 3000,
       entityMoveThrottleMs: 3000,
       blockUpdateThrottleMs: 1000,
@@ -64,9 +62,7 @@ export class PerceptionWorker {
     this._soundDedup = new Map();
 
     // Active scan interval handles
-    this._quickScanTimer = null;
     this._fullScanTimer = null;
-    this._blockStatsTimer = null;
     this._urgentCheckTimer = null;
 
     // Bound handlers for cleanup
@@ -104,10 +100,20 @@ export class PerceptionWorker {
     const now = Date.now();
     for (const entity of Object.values(this.bot.entities)) {
       if (entity === this.bot.entity) continue;
-      const name = entity.name || entity.username || '';
+      const name = entity.type === 'player'
+        ? ((entity.username || entity.name || '') + ' (player)')
+        : (entity.name || entity.username || '');
       if (IGNORED_MOBS.has(name)) continue;
       const dist = entity.position.distanceTo(this.bot.entity.position);
       if (dist > 32) continue;
+
+      // Resolve dropped item entities to their real item name via metadata
+      const resolved = (entity.type === 'object' || entity.type === 'other') &&
+                       (name === 'Item' || name === 'item')
+        ? this._resolveItemName(entity) : null;
+      const isItem = !!resolved;
+      const itemName = resolved ? (resolved + ' (item)') : name;
+
       this._knownEntities.set(entity.id, {
         name: name,
         type: entity.type,
@@ -123,7 +129,9 @@ export class PerceptionWorker {
         position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
         distance: Math.round(dist),
         direction: this._directionTo(entity.position),
-        is_hostile: HOSTILE_MOBS.has(name)
+        is_hostile: HOSTILE_MOBS.has(name),
+        is_item: isItem,
+        item_name: itemName
       });
     }
   }
@@ -140,6 +148,7 @@ export class PerceptionWorker {
     this._handlers.playerJoined = (player) => this._onPlayerJoined(player);
     this._handlers.playerLeft = (player) => this._onPlayerLeft(player);
     this._handlers.playerCollect = (collector, collected) => this._onPlayerCollect(collector, collected);
+    this._handlers.itemDrop = (entity) => this._onItemDrop(entity);
     this._handlers.rain = () => this._onWeatherChange();
 
     this.bot.on('entitySpawn', this._handlers.entitySpawn);
@@ -150,6 +159,7 @@ export class PerceptionWorker {
     this.bot.on('playerJoined', this._handlers.playerJoined);
     this.bot.on('playerLeft', this._handlers.playerLeft);
     this.bot.on('playerCollect', this._handlers.playerCollect);
+    this.bot.on('itemDrop', this._handlers.itemDrop);
     // rain event: some versions fire with no args, some don't fire at all
     // we also check weather changes in urgent check loop
     try { this.bot.on('rain', this._handlers.rain); } catch (_) { /* ignore if unsupported */ }
@@ -165,13 +175,12 @@ export class PerceptionWorker {
     this.bot.removeListener('playerJoined', this._handlers.playerJoined);
     this.bot.removeListener('playerLeft', this._handlers.playerLeft);
     this.bot.removeListener('playerCollect', this._handlers.playerCollect);
+    this.bot.removeListener('itemDrop', this._handlers.itemDrop);
     try { this.bot.removeListener('rain', this._handlers.rain); } catch (_) { /* ignore */ }
   }
 
   _startScanTimers() {
-    this._quickScanTimer = setInterval(() => this._doQuickScan(), this.options.quickScanIntervalMs);
     this._fullScanTimer = setInterval(() => this._doFullScan(), this.options.fullScanIntervalMs);
-    this._blockStatsTimer = setInterval(() => this._doBlockStats(), this.options.blockStatsIntervalMs);
   }
 
   _startUrgentCheck() {
@@ -179,9 +188,7 @@ export class PerceptionWorker {
   }
 
   _clearTimers() {
-    if (this._quickScanTimer) { clearInterval(this._quickScanTimer); this._quickScanTimer = null; }
     if (this._fullScanTimer) { clearInterval(this._fullScanTimer); this._fullScanTimer = null; }
-    if (this._blockStatsTimer) { clearInterval(this._blockStatsTimer); this._blockStatsTimer = null; }
     if (this._urgentCheckTimer) { clearInterval(this._urgentCheckTimer); this._urgentCheckTimer = null; }
   }
 
@@ -198,9 +205,14 @@ export class PerceptionWorker {
     const dist = entity.position.distanceTo(this.bot.entity.position);
     if (dist > 32) return;
 
+    // Player entities use username for display, mobs use entity name
+    const displayName = entity.type === 'player'
+      ? ((entity.username || entity.name || 'unknown') + ' (player)')
+      : (entity.name || entity.username || 'unknown');
+
     const now = Date.now();
     this._knownEntities.set(entity.id, {
-      name: entity.name || entity.username || 'unknown',
+      name: displayName,
       type: entity.type,
       position: entity.position.clone(),
       firstSeen: now,
@@ -208,35 +220,37 @@ export class PerceptionWorker {
       distance: dist
     });
 
-    // Detect item entities and extract the actual item name from metadata key 7
+    // Resolve dropped item entities to their real item name via metadata.
+    // When metadata hasn't arrived yet, defer — _onItemDrop will re-emit.
     let isItem = false;
     let itemName = null;
-    if (entity.type === 'object' && (entity.name === 'Item' || entity.name === 'item')) {
-      try {
-        // Mineflayer metadata is [{key, value}, ...] — find by key, not array index
-        let slot = null;
-        const meta = entity.metadata;
-        if (meta) {
-          if (Array.isArray(meta)) {
-            const entry = meta.find(m => m.key === 7);
-            slot = entry ? entry.value : null;
-          } else {
-            slot = meta[7];
-          }
-        }
-        if (slot) {
-          const itemId = slot.itemId != null ? slot.itemId : (slot.blockId != null ? slot.blockId : null);
-          if (itemId != null && this.bot && this.bot.registry && this.bot.registry.items) {
-            const item = this.bot.registry.items[itemId];
-            if (item) { itemName = item.name; isItem = true; }
-          }
-        }
-      } catch (_) { /* metadata access can fail, silently fall through */ }
+    if ((entity.type === 'object' || entity.type === 'other') &&
+        (entity.name === 'Item' || entity.name === 'item')) {
+      itemName = this._resolveItemName(entity);
+      if (itemName) {
+        itemName = itemName + ' (item)';
+        isItem = true;
+        // Store resolved name so _onEntityGone can show it
+        const known = this._knownEntities.get(entity.id);
+        if (known) known.itemName = itemName;
+      } else {
+        // Metadata not available yet — register as pending, defer emission
+        this._knownEntities.set(entity.id, {
+          name: displayName,
+          type: entity.type,
+          position: entity.position.clone(),
+          firstSeen: now,
+          lastSeen: now,
+          distance: dist,
+          _itemPending: true
+        });
+        return;
+      }
     }
 
     this.onEvent('entity_spawn', {
       entity_id: entity.id,
-      name: entity.name || entity.username || 'unknown',
+      name: displayName,
       type: entity.type,
       position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
       distance: Math.round(dist),
@@ -256,9 +270,12 @@ export class PerceptionWorker {
     if (!known) return;
     this._knownEntities.delete(entity.id);
 
+    // Use resolved item name if available, otherwise fall back to entity type name
+    const displayName = known.itemName || known.name;
+
     this.onEvent('entity_gone', {
       entity_id: entity.id,
-      name: known.name,
+      name: displayName,
       type: entity.type
     });
   }
@@ -268,20 +285,12 @@ export class PerceptionWorker {
     // Only track items collected by our own bot
     if (collector !== this.bot.entity) return;
 
-    // Extract the actual item name from the collected entity's metadata key 7
+    // Extract the actual item name from the collected entity's metadata key 8
+    // (Minecraft 1.20.x: item entity metadata index 8 = ITEM_STACK)
     let itemName = collected.name || 'unknown';
     let count = 1;
     try {
-      let slot = null;
-      const meta = collected.metadata;
-      if (meta) {
-        if (Array.isArray(meta)) {
-          const entry = meta.find(m => m.key === 7);
-          slot = entry ? entry.value : null;
-        } else {
-          slot = meta[7];
-        }
-      }
+      const slot = this._extractItemSlot(collected.metadata);
       if (slot) {
         count = slot.count || 1;
         const itemId = slot.itemId != null ? slot.itemId : (slot.blockId != null ? slot.blockId : null);
@@ -299,6 +308,39 @@ export class PerceptionWorker {
       count: count,
       distance: Math.round(dist),
       direction: this._directionTo(collected.position)
+    });
+  }
+
+  /** Mineflayer's itemDrop fires when entity_metadata reveals the real item data.
+   *  Corrects spawn events that were deferred because metadata wasn't ready yet. */
+  _onItemDrop(entity) {
+    if (!this._running || !this.bot?.entity) return;
+    if (entity === this.bot.entity) return;
+
+    const known = this._knownEntities.get(entity.id);
+    if (!known) return;
+
+    const resolved = this._resolveItemName(entity);
+    if (!resolved) return; // still no metadata, nothing to correct
+
+    const itemName = resolved + ' (item)';
+    const dist = entity.position.distanceTo(this.bot.entity.position);
+    if (dist > 32) return;
+
+    known.itemName = itemName;
+    delete known._itemPending;
+
+    // Re-emit with the real item name
+    this.onEvent('entity_spawn', {
+      entity_id: entity.id,
+      name: entity.name || 'Item',
+      type: entity.type,
+      position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
+      distance: Math.round(dist),
+      direction: this._directionTo(entity.position),
+      is_hostile: false,
+      is_item: true,
+      item_name: itemName
     });
   }
 
@@ -430,19 +472,6 @@ export class PerceptionWorker {
 
   // ==================== Active Scanning (snapshot, separate channel) ====================
 
-  _doQuickScan() {
-    if (!this._running || !this.bot?.entity) return;
-    const samples = [];
-    for (let i = 0; i < 8; i++) {
-      const yaw = i * 45;
-      const result = this._rayScanAt(yaw, 0);
-      if (result) samples.push(result);
-    }
-    // Quick scan: only used for urgent detection (lava/cliff), not terrain analysis
-    // Pushed via onScan so Python can check for threats
-    if (this.onScan) this.onScan('quick_scan', { samples });
-  }
-
   _doFullScan() {
     if (!this._running || !this.bot?.entity) return;
     const samples = [];
@@ -462,6 +491,11 @@ export class PerceptionWorker {
   forceFullScan() {
     if (!this._running || !this.bot?.entity) return;
     this._doFullScan();
+  }
+
+  forceBlockStats() {
+    if (!this._running || !this.bot?.entity) return;
+    this._doBlockStats();
   }
 
   /**
@@ -670,6 +704,39 @@ export class PerceptionWorker {
   }
 
   // ==================== Helpers ====================
+
+  /** Item entity metadata format (sparse array, length 9):
+   *    [0..7] → null
+   *    [8]    → { itemId, itemCount, components[], ... }
+   *  itemId is the raw Minecraft item ID, resolved to a display name via
+   *  registry.items[id].name (e.g. 28 → "bone").
+   *
+   *  Returns the slot at index 8 (the object with itemId/itemCount), or null. */
+  _extractItemSlot(metadata) {
+    if (!metadata) return null;
+    if (Array.isArray(metadata)) {
+      const slot = metadata[8];
+      if (slot && (slot.itemId != null || slot.blockId != null)) return slot;
+      if (slot?.value && (slot.value.itemId != null || slot.value.blockId != null)) return slot.value;
+      return null;
+    }
+    return metadata[8] || null;
+  }
+
+  /** Try to resolve a dropped item entity to its real display name via registry.
+   *  Returns the name (e.g. "spruce_log") or null. */
+  _resolveItemName(entity) {
+    try {
+      const slot = this._extractItemSlot(entity.metadata);
+      if (!slot) return null;
+      const itemId = slot.itemId != null ? slot.itemId : (slot.blockId != null ? slot.blockId : null);
+      if (itemId == null) return null;
+      const item = this.bot?.registry?.items?.[itemId];
+      return item?.name || null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   _directionTo(targetPos) {
     if (!this.bot?.entity) return 'unknown';

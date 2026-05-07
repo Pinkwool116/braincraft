@@ -265,24 +265,11 @@ class ReflexLayer:
                 logger.error(f"Lava reflex error: {e}")
 
         elif event_type == 'cliff_ahead':
+            # Pathfinder natively avoids cliffs (maxDropDown=4) — no reflex needed.
+            # Canceling pathfinding here would create a harmful conflict loop where
+            # goto is repeatedly interrupted by cliff detection, breaking movement.
             distance = data.get('distance', 0)
-            logger.warning(f"Cliff ahead at {distance} blocks")
-            self._log_reflex('cliff_ahead',
-                             f"感知层紧急预警: 前方{distance}格处检测到悬崖")
-            # Cancel pathfinding
-            try:
-                await self.ipc_server.send_command({
-                    'type': 'execute_code',
-                    'data': {
-                        'code': """
-                            bot.pathfinder.setGoal(null);
-                            log(bot, "Stopped at cliff edge!");
-                        """,
-                        'no_response': True
-                    }
-                })
-            except Exception as e:
-                logger.error(f"Cliff reflex error: {e}")
+            logger.debug(f"Cliff ahead at {distance} blocks (ignored — pathfinder handles this)")
 
         elif event_type == 'drowning':
             logger.warning("Drowning detected by perception worker")

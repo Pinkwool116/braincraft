@@ -108,7 +108,7 @@ async def main():
             mem_model = mem_resolved.get('model_name', '?')
             logger.info(f"Memory model: {mem_model} — "
                         f"consolidate={mem_cfg.get('consolidate_interval', 20)}, "
-                        f"crystallize={mem_cfg.get('enable_crystallize', True)}")
+                        f"crystallize_min={mem_cfg.get('crystallize_min_consolidations', 5)}")
 
         if 'embedding' in config:
             embed_model = config['embedding'].get('model', '?')

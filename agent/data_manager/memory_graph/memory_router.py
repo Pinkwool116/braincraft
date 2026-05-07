@@ -134,8 +134,7 @@ class MemoryRouter:
 
     async def consolidate(self) -> None:
         """
-        滚动压缩：将当前摘要与新增原始条目一起输入 LLM，
-        LLM 输出新的完整摘要全量替换旧摘要。
+        滚动压缩（2n 模式）：将前 n 个条目批次独立总结，摘要追加到文件末尾。
         已消费的原始条目从工作记忆中移除。
         """
         if not self.llm:
@@ -145,20 +144,22 @@ class MemoryRouter:
             logger.warning("缺少 PromptManager，跳过 consolidate")
             return
 
-        new_entries, current_summary = self.working_memory.get_entries_for_consolidation()
-        if not new_entries:
+        consumed_entries, _ = self.working_memory.get_entries_for_consolidation()
+        if not consumed_entries:
             return
 
-        # 格式化新增条目
         entry_lines = []
-        for entry in new_entries:
+        for entry in consumed_entries:
             line = self._format_entry_for_prompt(entry)
             entry_lines.append(line)
 
-        # 构建压缩提示词
         goal = self.working_memory.context.get("goal", "未知")
         strategic = self.working_memory.context.get("strategic_reasoning", "")
         environment = self.working_memory.context.get("environment", "")
+
+        # 取最近一条摘要作为上下文，帮助 LLM 衔接上文
+        summary_entries = self.working_memory.parse_summary_entries()
+        recent_summary = summary_entries[-1]['content'] if summary_entries else "（尚无上文摘要，这是第一次压缩）"
 
         prompt = await self.prompt_manager.render(
             'memory/working_memory_consolidation.md',
@@ -166,7 +167,7 @@ class MemoryRouter:
                 'GOAL': goal,
                 'STRATEGIC_REASONING': strategic,
                 'ENVIRONMENT': environment,
-                'CURRENT_SUMMARY': current_summary if current_summary else "（尚无摘要，这是第一次压缩）",
+                'RECENT_SUMMARY': recent_summary,
                 'NEW_ENTRIES': "\n".join(entry_lines),
             },
             strict=False
@@ -186,9 +187,9 @@ class MemoryRouter:
 
             new_summary = response.strip()
             if new_summary:
-                self.working_memory.update_summary(new_summary, consumed_entries=new_entries)
+                self.working_memory.update_summary(new_summary, consumed_entries=consumed_entries)
                 self.working_memory.consolidate_count_since_crystallize += 1
-                logger.info(f"工作记忆滚动压缩完成：{len(new_entries)} 条新条目已融入摘要")
+                logger.info(f"工作记忆滚动压缩完成：{len(consumed_entries)} 条条目已总结并追加")
             else:
                 logger.warning("consolidate: LLM 返回空摘要")
 
@@ -220,14 +221,19 @@ class MemoryRouter:
 
     async def crystallize(self) -> None:
         """
-        反思过程：将工作记忆蒸馏为长期记忆图谱节点和边。
-        在任务边界点（结束/放弃）调用。使用写锁保护图谱修改。
+        反思过程：将前 n 个摘要条目蒸馏为长期记忆图谱节点和边。
+        由 _maybe_crystallize() 在 consolidate_count 达到 2n 时触发。
+        使用写锁保护图谱修改。
         """
+        n = self._cfg.get('crystallize_min_consolidations', 5)
+
         if not self.llm:
             logger.warning("未配置 memory LLM，跳过 crystallize")
             raise NotImplementedError("Memory LLM is required for crystallize")
-        if not self.working_memory.has_content:
-            logger.debug("工作记忆为空，跳过 crystallize")
+
+        summary_entries = self.working_memory.parse_summary_entries()
+        if len(summary_entries) < n:
+            logger.debug(f"摘要条目不足（需要 {n}，当前 {len(summary_entries)}），跳过 crystallize")
             return
 
         if not self.prompt_manager:
@@ -235,7 +241,8 @@ class MemoryRouter:
             raise NotImplementedError("PromptManager is required for crystallize")
 
         async with self._write_lock:
-            buffer_text = self.working_memory.get_buffer_text()
+            batch = summary_entries[:n]
+            buffer_text = "\n\n---\n\n".join(e['content'] for e in batch)
 
             existing_context = await self._get_existing_context_for_reflection()
 
@@ -264,9 +271,8 @@ class MemoryRouter:
                 if match:
                     data = json.loads(match.group(0))
                     new_node_ids = self._integrate_llm_extraction(data)
-                    logger.info("crystallize 完成：工作记忆已蒸馏为图谱节点")
+                    logger.info(f"crystallize 完成：{n} 个摘要条目已蒸馏为图谱节点")
 
-                    # 异步生成新节点的 embedding
                     if new_node_ids and self.embedding.enabled:
                         new_nodes = [self.engine.get_node(nid) for nid in new_node_ids if self.engine.get_node(nid)]
                         if new_nodes:
@@ -277,16 +283,17 @@ class MemoryRouter:
 
             except Exception as e:
                 logger.error(f"crystallize 失败: {e}", exc_info=True)
-                return  # 失败时不清空工作记忆，下次可以重试
+                return
 
-            # 生成骨架摘要（仅供 Agent 上下文，不参与后续 consolidate/crystallize）
             new_nodes = new_node_ids if 'new_node_ids' in locals() else []
             skeleton = self._build_skeleton_summary(new_nodes)
             self.working_memory.skeleton_summary = skeleton
 
-            # 清空工作记忆（保留摘要和骨架），重置计数器
+            # 移除已消费的摘要条目，递减计数器
+            self.working_memory.remove_summary_entries(n)
+            self.working_memory.consolidate_count_since_crystallize -= n
+            # 清空 timeline 和 context（保留 consolidated_summary 剩余条目）
             self.working_memory.clear()
-            self.working_memory.consolidate_count_since_crystallize = 0
             self.crystallize_count += 1
 
     async def _get_existing_context_for_reflection(self) -> str:
@@ -298,7 +305,7 @@ class MemoryRouter:
         2. 从种子节点做 1 跳扩散激活获取关联邻居
         3. 将节点（含 ID）及边格式化为 LLM 可读文本
         """
-        if not self.working_memory.has_content:
+        if not self.working_memory.has_content and not self.working_memory.consolidated_summary:
             return "暂无已有记忆。"
 
         buffer_text = self.working_memory.get_buffer_text()

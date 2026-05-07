@@ -72,7 +72,7 @@ class AgentLoopLayer:
 
         # Interrupt watch: wake_event is set when new chat arrives during tool execution
         self.wake_event = asyncio.Event()
-        self.INTERRUPTIBLE_TOOLS = {'execute_step', 'wait'}
+        self.INTERRUPTIBLE_TOOLS = {'execute_step'}
 
         # Prompt Logger
         agent_name = config.get('agent_name', 'BrainyBot')
@@ -167,8 +167,8 @@ class AgentLoopLayer:
                 # Memory maintenance: consolidate if needed
                 await self._maybe_consolidate()
 
-                # Memory maintenance: crystallize if task was just cleared
-                await self._maybe_crystallize(tool_call, result)
+                # Memory maintenance: crystallize if consolidation threshold reached
+                await self._maybe_crystallize()
 
             except asyncio.CancelledError:
                 logger.info("Agent Loop cancelled")
@@ -387,6 +387,48 @@ class AgentLoopLayer:
             self.memory_manager.log(
                 entry_type='reasoning',
                 content=f"主动等待 {seconds} 秒",
+            )
+
+        elif tool_name == 'inspect_surroundings':
+            warnings = result.get('_warnings', [])
+            detail = {
+                'success': result.get('success', False),
+                'result_mode': result.get('mode'),
+                'radius': result.get('radius', tool_args.get('radius')),
+                'include': result.get('include', tool_args.get('include', 'both')),
+                'scan_mode': result.get('scan_mode', tool_args.get('scan_mode', 'important')),
+                'targets': result.get('targets', tool_args.get('targets', [])),
+                'focus': result.get('focus', tool_args.get('focus', '')),
+                'summary_text': result.get('summary_text'),
+                'summary': result.get('summary'),
+                'samples': result.get('samples'),
+                'truncated': result.get('truncated', False),
+                'error': result.get('error'),
+                'warnings': warnings,
+            }
+            content = f"细致观察周围环境: radius={detail['radius']}, include={detail['include']}, mode={detail['scan_mode']}"
+            if warnings:
+                content += " [参数警告: " + "; ".join(warnings) + "]"
+            self.memory_manager.log(
+                entry_type='action',
+                content=content,
+                detail=json.dumps(detail, ensure_ascii=False),
+            )
+
+        elif tool_name == 'scan_terrain':
+            detail = {
+                'success': result.get('success', False),
+                'focus': tool_args.get('focus', ''),
+                'fresh': result.get('fresh'),
+                'scan_generation': result.get('scan_generation'),
+                'description': result.get('description'),
+                'error': result.get('error'),
+            }
+            self.memory_manager.log(
+                entry_type='observation',
+                content=f"主动观察地形: {result.get('description', result.get('error', '无结果'))}",
+                detail=json.dumps(detail, ensure_ascii=False),
+                consolidate_weight=0,
             )
 
         elif tool_name == 'todolist':
@@ -679,50 +721,24 @@ class AgentLoopLayer:
         except Exception as e:
             logger.debug(f"Working memory consolidation failed: {e}")
 
-    async def _maybe_crystallize(self, tool_call: dict, result: dict):
+    async def _maybe_crystallize(self):
         """
-        Trigger crystallize (working memory → long-term graph) on:
-        1. All top-level todolist items are done
-        2. plan(action='write') wrote a new phase goal
-        3. todolist(action='overwrite') was executed (major refactor)
+        Trigger crystallize when consolidate_count_since_crystallize >= 2n.
 
-        All triggers require a minimum number of working memory entries
-        to avoid crystallizing on trivial content (e.g. the very first plan write).
+        n = crystallize_min_consolidations from config (default 5).
+        This is the ONLY condition — task-boundary triggers are removed.
         """
         if not self.memory_manager:
             return
 
-        # Guard: require sufficient consolidations to ensure enough context
         min_consolidations = self.config.get('memory', {}).get('crystallize_min_consolidations', 5)
-        if self.memory_manager.consolidate_count_since_crystallize <= min_consolidations:
-            return
+        threshold = 2 * min_consolidations
 
-        tool_name = tool_call.get('tool')
-        tool_args = tool_call.get('tool_args', {})
-
-        should_crystallize = False
-
-        # Trigger 1: todolist all done
-        if (tool_name == 'todolist' and
-                tool_args.get('action') == 'set_status' and
-                tool_args.get('status') == 'done'):
-            if self.todolist_store and self.todolist_store.is_all_done():
-                should_crystallize = True
-                logger.info("All todolist items done — crystallizing...")
-
-        # Trigger 2: plan write new phase goal
-        if tool_name == 'plan' and tool_args.get('action') == 'write':
-            content = tool_args.get('content', '')
-            if content.strip().startswith('# 当前阶段目标'):
-                should_crystallize = True
-                logger.info("New plan phase goal written — crystallizing...")
-
-        # Trigger 3: todolist overwrite (major refactor)
-        if tool_name == 'todolist' and tool_args.get('action') == 'overwrite':
-            should_crystallize = True
-            logger.info("Todolist overwritten — crystallizing...")
-
-        if should_crystallize:
+        if self.memory_manager.consolidate_count_since_crystallize >= threshold:
+            logger.info(
+                f"consolidate_count ({self.memory_manager.consolidate_count_since_crystallize}) "
+                f">= 2n ({threshold}) — crystallizing..."
+            )
             try:
                 await self.memory_manager.crystallize()
             except Exception as e:

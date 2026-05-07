@@ -22,8 +22,10 @@ class ScanTerrainTool:
 
     name: str = "scan_terrain"
     description: str = (
-        "主动扫描周围地形，返回地形类型、光照条件、资源分布、威胁评估等自然语言描述。"
-        "用于需要宏观了解周围环境时，与被动显示的附近方块数据互补。"
+        "主动扫描周围地形，返回宏观地形结构、可通行方向、资源方向、危险因素和行动建议。"
+        "参数: focus(可选，观察重点，如'找安全下矿入口'或'判断是否适合建临时基地'), "
+        "fresh_scan(默认true，主动请求JS新扫描), include_block_stats(默认true)。"
+        "用于理解地形结构；需要精确坐标时改用 inspect_surroundings。"
     )
 
     def __init__(self, perception_manager):
@@ -38,7 +40,7 @@ class ScanTerrainTool:
         Trigger an immediate terrain analysis.
 
         Args:
-            args: {} (no arguments needed)
+            args: {'focus': str, 'fresh_scan': bool, 'include_block_stats': bool}
 
         Returns:
             {'success': bool, 'description': str}
@@ -47,8 +49,23 @@ class ScanTerrainTool:
             return {'success': False, 'error': 'Perception system not available'}
 
         try:
-            text = await self.perception_manager.force_analyze_terrain()
+            focus = str(args.get('focus', '')).strip()
+            fresh_scan = args.get('fresh_scan', True)
+            include_block_stats = args.get('include_block_stats', True)
+            if isinstance(fresh_scan, str):
+                fresh_scan = fresh_scan.lower() not in ('false', '0', 'no')
+            if isinstance(include_block_stats, str):
+                include_block_stats = include_block_stats.lower() not in ('false', '0', 'no')
+
+            result = await self.perception_manager.force_analyze_terrain(
+                focus=focus,
+                fresh_scan=bool(fresh_scan),
+                include_block_stats=bool(include_block_stats),
+            )
+            text = result.get('description') if isinstance(result, dict) else result
             if text:
+                if isinstance(result, dict):
+                    return {'success': True, **result}
                 return {'success': True, 'description': text}
             else:
                 return {'success': False,

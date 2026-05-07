@@ -23,6 +23,7 @@ from ..tools.plan_tool import PlanTool
 from ..tools.draft_tool import DraftTool
 from ..tools.todolist_tool import TodolistTool
 from ..tools.scan_terrain_tool import ScanTerrainTool
+from ..tools.inspect_surroundings_tool import InspectSurroundingsTool
 from ..task_manager import ChatLogManager, PlanManager, DraftManager, TodoListStore
 from llm.llm_wrapper import create_llm_model
 from prompts.prompt_manager import PromptManager
@@ -202,8 +203,11 @@ class BrainCoordinator:
             perception_llm_config = self._resolve_model(perception_llm_config.copy())
             self._inject_api_keys(perception_llm_config)
             perception_llm = create_llm_model(perception_llm_config)
-        async def _request_scan():
-            await self.ipc_server.send_command({'type': 'trigger_full_scan'})
+        async def _request_scan(include_block_stats: bool = True):
+            await self.ipc_server.send_command({
+                'type': 'trigger_full_scan',
+                'data': {'include_block_stats': include_block_stats}
+            })
 
         self.perception_manager = PerceptionManager(
             memory_router=self.memory_manager,
@@ -220,6 +224,7 @@ class BrainCoordinator:
 
         # Tool registry
         self.tool_registry = ToolRegistry()
+        self.inspect_surroundings_tool = None
 
         # Execution layer
         self.execution_layer = ExecutionLayer(
@@ -438,9 +443,16 @@ class BrainCoordinator:
             self.perception_manager.handle_scan(scan_type, scan_data)
             return {'status': 'ok'}
 
+        async def handle_inspect_surroundings_result(data):
+            """Handle on-demand inspect_surroundings result from JS."""
+            if self.inspect_surroundings_tool:
+                self.inspect_surroundings_tool.handle_result(data)
+            return {'status': 'ok'}
+
         self.ipc_server.register_handler('perception_events', handle_perception_events)
         self.ipc_server.register_handler('perception_urgent', handle_perception_urgent)
         self.ipc_server.register_handler('perception_scan', handle_perception_scan)
+        self.ipc_server.register_handler('inspect_surroundings_result', handle_inspect_surroundings_result)
 
         logger.info("IPC message handlers registered")
 
@@ -510,6 +522,12 @@ class BrainCoordinator:
         self.tool_registry.register('wait', WaitTool(default_wait_seconds=idle_interval))
 
         self.tool_registry.register('scan_terrain', ScanTerrainTool(self.perception_manager))
+
+        self.inspect_surroundings_tool = InspectSurroundingsTool(
+            self.ipc_server,
+            perception_manager=self.perception_manager,
+        )
+        self.tool_registry.register('inspect_surroundings', self.inspect_surroundings_tool)
 
         logger.info(f"Registered {len(self.tool_registry._tools)} tools")
 

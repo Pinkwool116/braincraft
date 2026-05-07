@@ -170,6 +170,23 @@ class EventTicker:
         is_item = data.get('is_item', False)
         item_name = data.get('item_name', name)
 
+        # Detect corrected entity_spawn events (itemDrop → re-emitted with real item name)
+        # Update known entity if this event provides better item info
+        prev = self._known_entities.get(eid)
+        if prev and is_item and not prev.get('is_item'):
+            prev['is_item'] = True
+            prev['item_name'] = item_name
+            # Don't add to new_entities — add to item_drops as a corrected "掉落"
+            entry = {
+                'name': name,
+                'direction': data.get('direction', '?'),
+                'distance': data.get('distance', 0),
+                'is_item': True,
+                'item_name': item_name,
+            }
+            item_drops.append(entry)
+            return
+
         self._known_entities[eid] = {
             'name': name,
             'type': data.get('type', ''),

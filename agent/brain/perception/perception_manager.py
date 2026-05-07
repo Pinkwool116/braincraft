@@ -5,9 +5,9 @@ PerceptionManager — Coordinates two independent perception pipelines.
      Consumes discrete events (entity/sound/block/weather) from PerceptionBuffer
      → aggregates → writes observation to WorkingMemory.
 
-  2. TerrainAnalyzer (every 30s, Flash LLM):
+  2. TerrainAnalyzer (every 300s, Flash LLM):
      Receives scan snapshots from JS via handle_scan() (separate channel)
-     → every 30s checks latest scan → terrain description → WorkingMemory.
+     → every 300s checks latest scan → terrain description → WorkingMemory.
 
 Scan data and event data never mix. Scans are snapshots, not continuous.
 """
@@ -40,7 +40,7 @@ class PerceptionManager:
         self._get_position = get_position    # () → {'x','y','z'} | None
         self._get_health = get_health        # () → float | None
         self._get_food = get_food            # () → float | None
-        self._request_scan = request_scan    # async () → None (triggers JS full scan)
+        self._request_scan = request_scan    # async (...) → None (triggers JS full scan)
 
         # TerrainAnalyzer is optional (requires LLM)
         self.terrain_analyzer = None
@@ -181,32 +181,39 @@ class PerceptionManager:
             self._terrain_failures += 1
             logger.warning(f"Terrain analysis failed ({self._terrain_failures}/3): {e}")
 
-    async def force_analyze_terrain(self) -> Optional[str]:
+    async def force_analyze_terrain(
+            self,
+            focus: str = "",
+            fresh_scan: bool = True,
+            include_block_stats: bool = True) -> Optional[dict]:
         """Force an immediate terrain analysis using the latest scan data.
 
         Unlike _maybe_analyze_terrain, this does not check _scan_generation.
-        If no scan data is available, triggers a JS-side full scan and waits
+        If requested or no scan data is available, triggers a JS-side full scan and waits
         for the data to arrive (up to 5s timeout).
         Used by the scan_terrain tool for on-demand macro observation.
         """
         if not self.terrain_analyzer:
             return None
 
-        if not self._scan_samples:
+        start_generation = self._scan_generation
+        if fresh_scan or not self._scan_samples:
             # Trigger JS-side full scan and wait for data
             if self._request_scan:
                 try:
-                    await self._request_scan()
+                    await self._request_scan(include_block_stats=include_block_stats)
                 except Exception:
                     pass  # best-effort, proceed to check if data arrived
                 # Wait for scan data, polling every 200ms, up to 5 seconds
                 import asyncio as _asyncio
                 for _ in range(25):
                     await _asyncio.sleep(0.2)
-                    if self._scan_samples:
+                    if self._scan_samples and (not fresh_scan or self._scan_generation > start_generation):
                         break
             if not self._scan_samples:
                 return None  # still no data after waiting
+            if fresh_scan and self._scan_generation <= start_generation:
+                return None
 
         pos = self._get_position() if self._get_position else None
         biome = 'unknown'
@@ -220,15 +227,24 @@ class PerceptionManager:
 
         scan_data = {
             'ray_samples': self._scan_samples,
-            'block_stats': self._block_stats,
+            'block_stats': self._block_stats if include_block_stats else None,
             'biome': biome,
             'time_label': time_label,
+            'focus': focus,
         }
 
         try:
             text = await self.terrain_analyzer.analyze(scan_data)
             self._last_analyzed_generation = self._scan_generation
-            return text
+            return {
+                'description': text,
+                'focus': focus,
+                'fresh': bool(fresh_scan),
+                'scan_generation': self._scan_generation,
+                'biome': biome,
+                'time_label': time_label,
+                'include_block_stats': bool(include_block_stats),
+            } if text else None
         except Exception as e:
             logger.warning(f"Forced terrain analysis failed: {e}")
             return None

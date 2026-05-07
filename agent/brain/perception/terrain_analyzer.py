@@ -35,7 +35,8 @@ class TerrainAnalyzer:
                 'ray_samples': [(yaw, pitch, block_name, distance, sky_light), ...],
                 'block_stats': {...} or None,
                 'biome': 'plains',
-                'time_label': 'Day'
+                'time_label': 'Day',
+                'focus': 'optional observation focus'
             }
 
         Returns:
@@ -52,6 +53,7 @@ class TerrainAnalyzer:
 
         biome = scan_data.get('biome', 'unknown')
         time_label = scan_data.get('time_label', 'Day')
+        focus = scan_data.get('focus', '')
 
         prompt = await self.prompt_manager.render(
             'perception/terrain_analysis.md',
@@ -60,6 +62,7 @@ class TerrainAnalyzer:
                 'TIME_LABEL': time_label,
                 'SCAN_TEXT': scan_text,
                 'STATS_TEXT': stats_text,
+                'FOCUS': focus if focus else '无特定重点，客观描述整体地形。',
             },
             strict=False
         )

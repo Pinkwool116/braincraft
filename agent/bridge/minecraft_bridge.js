@@ -54,6 +54,37 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const settingsModule = await import('../../settings.js');
 const settings = settingsModule.default;
 
+const HOSTILE_ENTITY_NAMES = new Set([
+    'zombie', 'skeleton', 'spider', 'creeper', 'enderman', 'witch', 'slime',
+    'phantom', 'drowned', 'husk', 'stray', 'cave_spider', 'blaze', 'ghast',
+    'magma_cube', 'hoglin', 'piglin', 'piglin_brute', 'zoglin',
+    'wither_skeleton', 'vindicator', 'evoker', 'pillager', 'ravager',
+    'vex', 'guardian', 'elder_guardian', 'warden'
+]);
+
+const RESOURCE_ENTITY_NAMES = new Set([
+    'cow', 'sheep', 'pig', 'chicken', 'horse', 'donkey', 'mule', 'llama',
+    'wolf', 'cat', 'villager', 'wandering_trader', 'item', 'arrow'
+]);
+
+const IMPORTANT_BLOCK_EXACT = new Set([
+    'water', 'lava', 'fire', 'soul_fire', 'chest', 'trapped_chest', 'barrel',
+    'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'bed',
+    'torch', 'wall_torch', 'lantern', 'soul_torch', 'soul_lantern',
+    'lever', 'stone_button', 'oak_button', 'spruce_button', 'birch_button',
+    'jungle_button', 'acacia_button', 'dark_oak_button', 'mangrove_button',
+    'cherry_button', 'bamboo_button', 'crimson_button', 'warped_button',
+    'wheat', 'carrots', 'potatoes', 'beetroots', 'melon', 'pumpkin',
+    'rail', 'powered_rail', 'detector_rail', 'activator_rail'
+]);
+
+const IMPORTANT_BLOCK_PATTERNS = [
+    '_ore', '_log', '_stem', '_hyphae', 'door', 'trapdoor', 'pressure_plate',
+    'button', 'lever', 'chest', 'furnace', 'bed', 'torch', 'lantern',
+    'crafting_table', 'anvil', 'enchanting_table', 'brewing_stand',
+    'shulker_box', 'sign'
+];
+
 class BrainBridge {
     constructor() {
         this.bot = null;
@@ -158,7 +189,25 @@ class BrainBridge {
                 // Python requested an immediate full terrain scan
                 if (this.perceptionWorker) {
                     this.perceptionWorker.forceFullScan();
+                    if (data?.include_block_stats !== false) {
+                        this.perceptionWorker.forceBlockStats();
+                    }
                 }
+                break;
+
+            case 'inspect_surroundings_request':
+                // Execute on-demand observation and send the result back via REQ queue
+                this.handleInspectSurroundingsRequest(data).catch(error => {
+                    console.error('inspect_surroundings_request failed:', error);
+                    this.sendMessage({
+                        type: 'inspect_surroundings_result',
+                        data: {
+                            request_id: data?.request_id,
+                            success: false,
+                            error: error.message || String(error)
+                        }
+                    }).catch(() => {});
+                });
                 break;
 
             case 'request_state_update':
@@ -258,7 +307,12 @@ class BrainBridge {
             // Important: We need to return the Promise so errors can be caught
             const wrappedCode = `
                 return (async function(bot, skills, world, goals, Vec3, log) {
-                    ${code}
+                    try {
+                        ${code}
+                    } catch (err) {
+                        log(bot, "Code error: " + (err && err.message || String(err)));
+                        throw err;
+                    }
                 })(context.bot, context.skills, context.world, context.goals, context.Vec3, context.log);
             `;
 
@@ -727,50 +781,65 @@ class BrainBridge {
     }
 
     getNearbyEntities() {
-        // Like original MindCraft: get entities sorted by distance
+        // Default prompt view: only important entities, sorted by distance.
         const entities = [];
         for (const entity of Object.values(this.bot.entities)) {
+            if (!entity || entity === this.bot.entity || !entity.position) continue;
             const distance = entity.position.distanceTo(this.bot.entity.position);
-            if (distance > 16) continue;
+            if (distance > 32) continue;
+            if (!this.isImportantEntity(entity)) continue;
             entities.push({ entity, distance });
         }
 
-        // Sort by distance (like original)
         entities.sort((a, b) => a.distance - b.distance);
 
-        return entities.map(({ entity: e }) => ({
+        return entities.slice(0, 30).map(({ entity: e, distance }) => ({
             type: e.type,
             name: e.type === 'player' ? e.username : e.name,
-            position: e.position,
+            position: this.serializePosition(e.position),
+            distance: Math.round(distance * 10) / 10,
+            direction: this.directionTo(e.position),
             health: e.metadata && e.metadata[7] !== undefined ? e.metadata[7] : null
         }));
     }
 
     getNearbyBlocks() {
-        // Get blocks in 3x3x3 area, using the same approach as original MindCraft
-        // Use bot.findBlocks to properly search for blocks
+        // Default prompt view: summarize important nearby blocks only.
         const positions = this.bot.findBlocks({
-            matching: (block) => {
-                return block && block.name !== 'air' && block.name !== 'cave_air';
-            },
-            maxDistance: 3,
-            count: 1000
+            matching: (block) => block && this.isImportantBlock(block.name),
+            maxDistance: 8,
+            count: 2000
         });
 
-        const blocks = [];
-
+        const stats = {};
         for (const position of positions) {
             const block = this.bot.blockAt(position);
             if (!block) continue;
-
-            blocks.push({
-                name: block.name,
-                position: block.position,
-                metadata: block.metadata || 0
-            });
+            const name = block.name;
+            if (!stats[name]) {
+                stats[name] = {
+                    name,
+                    count: 0,
+                    nearest: null,
+                    directions: {}
+                };
+            }
+            const distance = block.position.distanceTo(this.bot.entity.position);
+            const direction = this.directionTo(block.position);
+            stats[name].count++;
+            stats[name].directions[direction] = (stats[name].directions[direction] || 0) + 1;
+            if (!stats[name].nearest || distance < stats[name].nearest.distance) {
+                stats[name].nearest = {
+                    position: this.serializePosition(block.position),
+                    distance: Math.round(distance * 10) / 10,
+                    direction
+                };
+            }
         }
 
-        return blocks;
+        return Object.values(stats)
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 30);
     }
 
     getSurroundingBlocks() {
@@ -796,11 +865,333 @@ class BrainBridge {
         }
 
         return {
-            below: below ? below.name : 'void',
-            legs: legs ? legs.name : 'air',
-            head: head ? head.name : 'air',
-            firstAbove: firstAbove ? `${firstAbove.name} (${height} blocks up)` : 'none'
+            below: this.describeBlockAtPosition(below, pos.offset(0, -1, 0)),
+            legs: this.describeBlockAtPosition(legs, pos.offset(0, 0, 0)),
+            head: this.describeBlockAtPosition(head, pos.offset(0, 1, 0)),
+            firstAbove: firstAbove
+                ? {
+                    name: firstAbove.name,
+                    position: this.serializePosition(firstAbove.position),
+                    distance: height + 2,
+                    description: `${firstAbove.name} (${height + 2} blocks above head)`
+                }
+                : { name: 'none', position: null, distance: null, description: 'none' }
         };
+    }
+
+    async handleInspectSurroundingsRequest(data = {}) {
+        const result = this.inspectSurroundings(data);
+        await this.sendMessage({
+            type: 'inspect_surroundings_result',
+            data: result
+        });
+    }
+
+    inspectSurroundings(data = {}) {
+        const requestId = data.request_id;
+        if (!this.bot || !this.isBotReady || !this.bot.entity) {
+            return {
+                request_id: requestId,
+                success: false,
+                error: 'Bot is not ready'
+            };
+        }
+
+        const radius = Math.max(1, Math.min(parseInt(data.radius ?? 3, 10) || 3, 20));
+        const include = ['blocks', 'entities', 'both'].includes(data.include) ? data.include : 'both';
+        const scanMode = ['important', 'targets_only', 'all'].includes(data.scan_mode) ? data.scan_mode : 'important';
+        const targets = Array.isArray(data.targets)
+            ? data.targets.map(t => String(t).trim()).filter(Boolean)
+            : (data.targets ? [String(data.targets).trim()] : []);
+        const limit = Math.max(1, Math.min(parseInt(data.limit ?? 80, 10) || 80, 300));
+
+        const targetInfo = this.resolveInspectTargets(targets);
+        if (targets.length > 0 && targetInfo.validBlocks.size === 0 && targetInfo.validEntities.size === 0) {
+            return {
+                request_id: requestId,
+                success: false,
+                error: 'No valid block/entity targets matched current Minecraft registry or loaded entities',
+                invalid_targets: targetInfo.invalidTargets,
+                suggestions: targetInfo.suggestions
+            };
+        }
+
+        const blocks = include === 'entities'
+            ? []
+            : this.scanBlocksInCube(radius, scanMode, targetInfo.validBlocks, targets.length > 0);
+        const entities = include === 'blocks'
+            ? []
+            : this.scanEntitiesInRadius(radius, scanMode, targetInfo.validEntities, targets.length > 0);
+
+        const fullMode = radius <= 3;
+        const summary = this.buildInspectSummary(blocks, entities);
+        const samples = {
+            blocks: blocks.slice(0, limit),
+            entities: entities.slice(0, limit)
+        };
+
+        const result = {
+            request_id: requestId,
+            success: true,
+            mode: fullMode ? 'full' : 'summary',
+            radius,
+            include,
+            scan_mode: scanMode,
+            targets,
+            focus: data.focus || '',
+            total: {
+                blocks: blocks.length,
+                entities: entities.length
+            },
+            summary,
+            samples,
+            truncated: blocks.length > limit || entities.length > limit
+        };
+
+        if (fullMode) {
+            result.blocks = blocks;
+            result.entities = entities;
+        } else {
+            result.summary_text = this.buildFallbackInspectSummaryText(result);
+        }
+        if (targetInfo.invalidTargets.length > 0) {
+            result.invalid_targets = targetInfo.invalidTargets;
+            result.suggestions = targetInfo.suggestions;
+        }
+        return result;
+    }
+
+    scanBlocksInCube(radius, scanMode, validBlocks, hasTargets) {
+        const origin = this.bot.entity.position.floored();
+        const blocks = [];
+        for (let dx = -radius; dx <= radius; dx++) {
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dz = -radius; dz <= radius; dz++) {
+                    const pos = origin.offset(dx, dy, dz);
+                    const block = this.bot.blockAt(pos);
+                    if (!block || block.name === 'air' || block.name === 'cave_air') continue;
+                    if (!this.blockMatchesInspectMode(block.name, scanMode, validBlocks, hasTargets)) continue;
+                    const distance = block.position.distanceTo(this.bot.entity.position);
+                    blocks.push({
+                        name: block.name,
+                        position: this.serializePosition(block.position),
+                        distance: Math.round(distance * 10) / 10,
+                        direction: this.directionTo(block.position),
+                        metadata: block.metadata || 0,
+                        light: block.light ?? null,
+                        sky_light: block.skyLight ?? null,
+                        diggable: block.diggable ?? null
+                    });
+                }
+            }
+        }
+        blocks.sort((a, b) => a.distance - b.distance || a.name.localeCompare(b.name));
+        return blocks;
+    }
+
+    scanEntitiesInRadius(radius, scanMode, validEntities, hasTargets) {
+        const entities = [];
+        for (const entity of Object.values(this.bot.entities)) {
+            if (!entity || entity === this.bot.entity || !entity.position) continue;
+            const distance = entity.position.distanceTo(this.bot.entity.position);
+            if (distance > radius) continue;
+            const name = this.entityInspectName(entity);
+            if (!this.entityMatchesInspectMode(entity, name, scanMode, validEntities, hasTargets)) continue;
+            entities.push({
+                type: entity.type,
+                name,
+                username: entity.username || null,
+                position: this.serializePosition(entity.position),
+                distance: Math.round(distance * 10) / 10,
+                direction: this.directionTo(entity.position),
+                health: entity.metadata && entity.metadata[7] !== undefined ? entity.metadata[7] : null
+            });
+        }
+        entities.sort((a, b) => a.distance - b.distance || a.name.localeCompare(b.name));
+        return entities;
+    }
+
+    blockMatchesInspectMode(name, scanMode, validBlocks, hasTargets) {
+        if (hasTargets) {
+            return validBlocks.has(name);
+        }
+        if (scanMode === 'all') return true;
+        if (scanMode === 'targets_only') return false;
+        return this.isImportantBlock(name);
+    }
+
+    entityMatchesInspectMode(entity, name, scanMode, validEntities, hasTargets) {
+        if (hasTargets) {
+            return validEntities.has(name) || validEntities.has(entity.type);
+        }
+        if (scanMode === 'all') return true;
+        if (scanMode === 'targets_only') return false;
+        return this.isImportantEntity(entity);
+    }
+
+    resolveInspectTargets(targets) {
+        const validBlocks = new Set();
+        const validEntities = new Set();
+        const invalidTargets = [];
+        const suggestions = {};
+        const blockNames = Object.keys(this.bot?.registry?.blocksByName || {});
+        const registryEntityNames = Object.keys(this.bot?.registry?.entitiesByName || {});
+        const loadedEntityNames = new Set();
+        for (const entity of Object.values(this.bot?.entities || {})) {
+            if (!entity) continue;
+            loadedEntityNames.add(this.entityInspectName(entity));
+            loadedEntityNames.add(entity.type);
+        }
+        const entityNames = new Set([...registryEntityNames, ...loadedEntityNames, 'player', 'item', 'arrow']);
+
+        for (const target of targets) {
+            if (blockNames.includes(target)) {
+                validBlocks.add(target);
+                continue;
+            }
+            if (entityNames.has(target)) {
+                validEntities.add(target);
+                continue;
+            }
+
+            const partialBlocks = blockNames.filter(name => name.includes(target)).slice(0, 10);
+            const partialEntities = [...entityNames].filter(name => name && name.includes(target)).slice(0, 10);
+            if (partialBlocks.length > 0) {
+                for (const name of partialBlocks) validBlocks.add(name);
+            }
+            if (partialEntities.length > 0) {
+                for (const name of partialEntities) validEntities.add(name);
+            }
+            if (partialBlocks.length === 0 && partialEntities.length === 0) {
+                invalidTargets.push(target);
+                suggestions[target] = [
+                    ...this.closestNames(target, blockNames, 5),
+                    ...this.closestNames(target, [...entityNames], 5)
+                ].slice(0, 10);
+            }
+        }
+        return { validBlocks, validEntities, invalidTargets, suggestions };
+    }
+
+    buildInspectSummary(blocks, entities) {
+        return {
+            blocks_by_name: this.countByNameWithNearest(blocks),
+            entities_by_name: this.countByNameWithNearest(entities)
+        };
+    }
+
+    countByNameWithNearest(items) {
+        const stats = {};
+        for (const item of items) {
+            if (!stats[item.name]) {
+                stats[item.name] = {
+                    count: 0,
+                    nearest: item,
+                    directions: {}
+                };
+            }
+            stats[item.name].count++;
+            stats[item.name].directions[item.direction] = (stats[item.name].directions[item.direction] || 0) + 1;
+            if (item.distance < stats[item.name].nearest.distance) {
+                stats[item.name].nearest = item;
+            }
+        }
+        return stats;
+    }
+
+    buildFallbackInspectSummaryText(result) {
+        const blockParts = Object.entries(result.summary.blocks_by_name || {})
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 8)
+            .map(([name, info]) => `${name} ${info.count}个，最近${info.nearest.direction}${info.nearest.distance}格 (${info.nearest.position.x},${info.nearest.position.y},${info.nearest.position.z})`);
+        const entityParts = Object.entries(result.summary.entities_by_name || {})
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 8)
+            .map(([name, info]) => `${name} ${info.count}个，最近${info.nearest.direction}${info.nearest.distance}格`);
+        const parts = [];
+        if (blockParts.length) parts.push(`方块: ${blockParts.join('; ')}`);
+        if (entityParts.length) parts.push(`实体: ${entityParts.join('; ')}`);
+        return parts.length ? parts.join(' | ') : '未发现匹配的方块或实体。';
+    }
+
+    isImportantBlock(name) {
+        if (!name) return false;
+        if (IMPORTANT_BLOCK_EXACT.has(name)) return true;
+        return IMPORTANT_BLOCK_PATTERNS.some(pattern => name.includes(pattern));
+    }
+
+    isImportantEntity(entity) {
+        const name = this.entityInspectName(entity);
+        if (entity.type === 'player') return true;
+        if (HOSTILE_ENTITY_NAMES.has(name) || entity.type === 'hostile') return true;
+        if (RESOURCE_ENTITY_NAMES.has(name)) return true;
+        if (entity.type === 'object' && (name === 'item' || name === 'Item')) return true;
+        return false;
+    }
+
+    entityInspectName(entity) {
+        if (!entity) return 'unknown';
+        if (entity.type === 'player') return 'player';
+        if (entity.name === 'Item') return 'item';
+        return entity.name || entity.username || entity.type || 'unknown';
+    }
+
+    describeBlockAtPosition(block, pos) {
+        return {
+            name: block ? block.name : 'void',
+            position: this.serializePosition(block?.position || pos),
+            description: `${block ? block.name : 'void'} (${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)})`
+        };
+    }
+
+    serializePosition(pos) {
+        if (!pos) return null;
+        return {
+            x: Math.floor(pos.x),
+            y: Math.floor(pos.y),
+            z: Math.floor(pos.z)
+        };
+    }
+
+    directionTo(targetPos) {
+        if (!this.bot?.entity || !targetPos) return 'unknown';
+        const dx = targetPos.x - this.bot.entity.position.x;
+        const dy = targetPos.y - this.bot.entity.position.y;
+        const dz = targetPos.z - this.bot.entity.position.z;
+        const angle = (Math.atan2(dx, dz) * 180) / Math.PI;
+
+        let h = '';
+        if (angle >= -22.5 && angle < 22.5) h = '北';
+        else if (angle >= 22.5 && angle < 67.5) h = '东北';
+        else if (angle >= 67.5 && angle < 112.5) h = '东';
+        else if (angle >= 112.5 && angle < 157.5) h = '东南';
+        else if (angle >= 157.5 || angle < -157.5) h = '南';
+        else if (angle >= -157.5 && angle < -112.5) h = '西南';
+        else if (angle >= -112.5 && angle < -67.5) h = '西';
+        else if (angle >= -67.5 && angle < -22.5) h = '西北';
+        if (dy > 2) return `${h}上方`;
+        if (dy < -2) return `${h}下方`;
+        return h || '未知';
+    }
+
+    closestNames(target, names, limit) {
+        const lower = target.toLowerCase();
+        return names
+            .filter(Boolean)
+            .map(name => ({ name, score: this.nameDistance(lower, name.toLowerCase()) }))
+            .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))
+            .slice(0, limit)
+            .map(item => item.name);
+    }
+
+    nameDistance(a, b) {
+        if (b.includes(a) || a.includes(b)) return Math.abs(a.length - b.length);
+        const minLen = Math.min(a.length, b.length);
+        let same = 0;
+        for (let i = 0; i < minLen; i++) {
+            if (a[i] === b[i]) same++;
+        }
+        return Math.max(a.length, b.length) - same;
     }
 
     async initBot() {
@@ -947,9 +1338,7 @@ class BrainBridge {
                         }).catch(() => {});
                     },
                     {
-                        quickScanIntervalMs: 5000,
-                        fullScanIntervalMs: 30000,
-                        blockStatsIntervalMs: 60000,
+                        fullScanIntervalMs: 300000,
                         urgentCheckIntervalMs: 500
                     }
                 );
@@ -1307,6 +1696,14 @@ class BrainBridge {
 
         // Handle termination signal (SIGTERM)
         process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+
+        // Prevent floating promise rejections in LLM-generated code from crashing the process.
+        // The executeCode try/catch catches errors in properly-awaited code;
+        // this handles the case where LLM code calls async functions without await.
+        process.on('unhandledRejection', (reason, promise) => {
+            console.error('Unhandled rejection in LLM code execution:', reason);
+            // Don't crash — the bridge should survive bad generated code
+        });
     }
 }
 

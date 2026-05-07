@@ -14,6 +14,7 @@ from .wait_tool import WaitTool
 from .plan_tool import PlanTool
 from .draft_tool import DraftTool
 from .todolist_tool import TodolistTool
+from .inspect_surroundings_tool import InspectSurroundingsTool
 
 __all__ = [
     'ToolRegistry',
@@ -25,4 +26,5 @@ __all__ = [
     'PlanTool',
     'DraftTool',
     'TodolistTool',
+    'InspectSurroundingsTool',
 ]

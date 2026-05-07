@@ -82,12 +82,23 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
             Dictionary with keys: below, legs, head, above
         """
         surrounding = state.get('surrounding_blocks', {})
+
+        def fmt(value, default: str) -> str:
+            if isinstance(value, dict):
+                if value.get('description'):
+                    return value['description']
+                name = value.get('name', default)
+                pos = value.get('position')
+                if isinstance(pos, dict):
+                    return f"{name} ({pos.get('x', '?')},{pos.get('y', '?')},{pos.get('z', '?')})"
+                return str(name)
+            return value if value is not None else default
         
         return {
-            'below': surrounding.get('below', 'unknown'),
-            'legs': surrounding.get('legs', 'unknown'),
-            'head': surrounding.get('head', 'unknown'),
-            'above': surrounding.get('firstAbove', 'none')
+            'below': fmt(surrounding.get('below'), 'unknown'),
+            'legs': fmt(surrounding.get('legs'), 'unknown'),
+            'head': fmt(surrounding.get('head'), 'unknown'),
+            'above': fmt(surrounding.get('firstAbove'), 'none')
         }
     
     @staticmethod
@@ -109,6 +120,16 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
         lines = []
         for block in nearby_blocks:
             block_name = block.get('name', 'unknown')
+            if 'count' in block and 'nearest' in block:
+                nearest = block.get('nearest') or {}
+                pos = nearest.get('position') or {}
+                dist = nearest.get('distance', '?')
+                direction = nearest.get('direction', '?')
+                lines.append(
+                    f"- {block_name}: {block.get('count', 0)}个，最近{direction}{dist}格 "
+                    f"({pos.get('x', '?')},{pos.get('y', '?')},{pos.get('z', '?')})"
+                )
+                continue
             pos = block.get('position', {})
             x = pos.get('x', '?')
             y = pos.get('y', '?')
@@ -140,35 +161,26 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
         if not nearby_entities or not isinstance(nearby_entities, list):
             return "- No entity scan data"
         
-        entity_types: Set[str] = set()
-        human_players: Set[str] = set()
-        
+        entity_summaries: List[str] = []
         for entity in nearby_entities:
             entity_type = entity.get('type', 'unknown')
             entity_name = entity.get('name', entity_type)
-            
-            # Separate human players (like original)
-            if entity_type == 'player':
-                human_players.add(entity_name)
-            # Filter out items and players (like original)
-            elif entity_type not in ['item']:
-                entity_types.add(entity_type)
-        
-        # Build formatted list
-        entities_list: List[str] = []
-        
-        # Add human players first
-        for player in sorted(human_players):
-            entities_list.append(f"- Human player: {player}")
-        
-        # Add other entities
-        for entity_type in sorted(entity_types):
-            entities_list.append(f"- {entity_type}")
-        
-        if not entities_list:
+            distance = entity.get('distance')
+            direction = entity.get('direction')
+            pos = entity.get('position') or {}
+            if entity_type == 'player' and entity_name == 'player':
+                entity_name = entity.get('username') or entity_name
+            parts = [f"- {entity_name} ({entity_type})"]
+            if direction is not None and distance is not None:
+                parts.append(f"{direction}{distance}格")
+            if isinstance(pos, dict) and pos:
+                parts.append(f"({pos.get('x', '?')},{pos.get('y', '?')},{pos.get('z', '?')})")
+            entity_summaries.append(" ".join(parts))
+
+        if not entity_summaries:
             return "- None"
-        
-        return '\n'.join(entities_list)
+
+        return '\n'.join(entity_summaries)
     
     @staticmethod
     def format_environment_info(state: Dict[str, Any]) -> Dict[str, str]:

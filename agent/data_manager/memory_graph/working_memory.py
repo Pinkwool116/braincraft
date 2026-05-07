@@ -132,6 +132,7 @@ class WorkingMemoryBuffer:
             "timestamp": time.time(),
             "type": entry_type,
             "content": content,
+            "consolidate_weight": consolidate_weight,
         }
         if detail:
             entry["detail"] = detail
@@ -213,39 +214,126 @@ class WorkingMemoryBuffer:
     # ==================== 滚动压缩 ====================
 
     def should_consolidate(self) -> bool:
-        """当前是否应该触发一次滚动压缩。"""
-        return self._entries_since_last_consolidation >= self.consolidate_interval
+        """检查是否达到 2n 触发条件：accumulated weight >= 2 * interval。"""
+        return self._entries_since_last_consolidation >= 2 * self.consolidate_interval
 
     def get_entries_for_consolidation(self):
         """
-        返回待压缩的新增原始条目和当前压缩摘要，供 LLM 全量压缩使用。
+        返回待压缩的条目批次（2n 模式）。
+
+        从 timeline 头部扫描，计数 consolidate_weight > 0 的条目，
+        找到第 n 个的边界位置。边界内的 weight=0 条目一并包含。
 
         Returns:
-            (new_entries, current_summary): 
-                new_entries: 需要被压缩的记录列表，目前是取时间线上尚未压缩的所有条目
-                current_summary: 当前的滚动压缩摘要文本（可能为空字符串）
+            (consumed_entries, ""):
+                consumed_entries: 需要被压缩的条目列表（前 n 个 weight>0 条目 + 夹带的 weight=0）
+                第二个元素保持空字符串（接口兼容，新 prompt 不再使用 CURRENT_SUMMARY）
         """
-        # 返回当前缓冲区内所有的记录进行压缩
-        new_entries = list(self.timeline)
-        return new_entries, self.consolidated_summary
+        n = self.consolidate_interval
+        count = 0
+        boundary = -1
+        for i, entry in enumerate(self.timeline):
+            if entry.get("consolidate_weight", 1) > 0:
+                count += 1
+            if count >= n:
+                boundary = i + 1
+                break
+
+        if boundary == -1:
+            return [], ""
+
+        consumed = list(self.timeline[:boundary])
+        return consumed, ""
 
     def update_summary(self, new_summary: str, consumed_entries: List[Dict[str, Any]]):
         """
-        用 LLM 生成的新摘要完全替换旧摘要，并移除已被消费的原始条目。
+        追加新的压缩摘要（带 ID 标记），移除已消费的原始条目。
 
-        新模型：旧摘要 + 新原始条目 → LLM → 新的完整摘要，全量替换。
+        新模型：每批独立总结，摘要追加到 consolidated_summary 末尾。
         被消费的原始条目从 timeline 中移除（其信息已融入摘要）。
-        
+
         Args:
-            new_summary: LLM 生成的新压缩摘要
-            consumed_entries: 需要被删除的、已被包含在本次压缩中的条目列表。
-                              通过匹配 ID 来真实删除目标。
+            new_summary: LLM 生成的摘要文本
+            consumed_entries: 本次被消费的条目列表，通过 ID 匹配删除
         """
         ids_to_remove = {e.get("id") for e in consumed_entries}
         self.timeline = [e for e in self.timeline if e.get("id") not in ids_to_remove]
-        self._entries_since_last_consolidation = len(self.timeline)
+        self._entries_since_last_consolidation = sum(
+            e.get("consolidate_weight", 1) for e in self.timeline
+        )
 
-        self.consolidated_summary = new_summary.strip()
+        summary_id = uuid.uuid4().hex[:12]
+        new_block = f"[consolidation:{summary_id}]\n{new_summary.strip()}"
+        if self.consolidated_summary:
+            self.consolidated_summary += "\n\n" + new_block
+        else:
+            self.consolidated_summary = new_block
+
+        self._save()
+
+    def parse_summary_entries(self) -> List[Dict[str, str]]:
+        """
+        将 consolidated_summary 解析为结构化列表。
+
+        consolidated_summary 是连续追加的文本块，格式为：
+            [consolidation:id1]
+            content line 1
+            content line 2
+
+            [consolidation:id2]
+            content line 3
+            ...
+
+        Returns:
+            按顺序排列的列表，每项为 {"id": str, "content": str}
+            空摘要返回空列表。
+        """
+        if not self.consolidated_summary.strip():
+            return []
+
+        entries = []
+        current_id = None
+        current_lines = []
+
+        for line in self.consolidated_summary.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith('[consolidation:') and stripped.endswith(']'):
+                if current_id is not None:
+                    content = '\n'.join(current_lines).strip()
+                    if content:
+                        entries.append({"id": current_id, "content": content})
+                current_id = stripped[len('[consolidation:'):-len(']')]
+                current_lines = []
+            else:
+                current_lines.append(line)
+
+        if current_id is not None:
+            content = '\n'.join(current_lines).strip()
+            if content:
+                entries.append({"id": current_id, "content": content})
+
+        return entries
+
+    def remove_summary_entries(self, count: int):
+        """
+        从 consolidated_summary 开头移除 N 个摘要条目。
+
+        crystallize 消费前 n 个摘要条目后调用，保持 FIFO 顺序（最旧的先被消费）。
+
+        Args:
+            count: 要移除的条目数量（从头开始）
+        """
+        entries = self.parse_summary_entries()
+        if not entries or count <= 0:
+            return
+        kept = entries[count:]
+
+        if not kept:
+            self.consolidated_summary = ""
+        else:
+            blocks = [f"[consolidation:{e['id']}]\n{e['content']}" for e in kept]
+            self.consolidated_summary = "\n\n".join(blocks)
+
         self._save()
 
     # ==================== 读取 ====================
@@ -300,9 +388,9 @@ class WorkingMemoryBuffer:
             lines.append("▸ 近期概要")
             lines.append(self.skeleton_summary)
 
-        # 尚未压缩的原始条目（最多显示最新 20 条，避免过长）
+        # 尚未压缩的原始条目（最多显示最新 N 条，N=consolidate_interval）
         if self.timeline:
-            visible = self.timeline[-20:]
+            visible = self.timeline[-self.consolidate_interval:]
             lines.append("")
             lines.append(f"▸ 最新记录（共 {len(self.timeline)} 条，显示最新 {len(visible)} 条）")
             for entry in visible:

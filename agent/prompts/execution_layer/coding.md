@@ -134,11 +134,11 @@ if (grassAfter - grassBefore < 10) {  // ❌ 多余的检查，技能内部早�
 
 对于重在导航探索的任务，优先把移动切分成一小段一小段，在每个分段之后返回（return），这样大脑可以进行迭代调用，而不要在一个代码块中写运行时间极长的循环。
 
-常见技能的返回值：
-- `collectBlock()` → boolean (如果收集到返回true，如果没找到/失败返回false)
-- `craftRecipe()` → boolean (制作成功返回true，缺少材料返回false)
-- `placeBlock()` → boolean (放置成功返回true，失败返回false)
-- `tillAndSow()` → boolean (耕种并播种成功为true，失败为false)
+常见技能的返回值（都是 boolean，要获取数量请检查背包前后变化）：
+- `collectBlock()` → boolean (true=收集到, false=没找到/失败) — **不是数量**
+- `craftRecipe()` → boolean (true=制作成功, false=缺少材料)
+- `placeBlock()` → boolean (true=放置成功, false=失败)
+- `tillAndSow()` → boolean (true=耕种成功, false=失败)
 
 ### 错误处理
 如果你的代码抛出了错误，你将收到错误消息。分析错误并编写更正后的代码。

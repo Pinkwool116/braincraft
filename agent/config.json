@@ -6,7 +6,6 @@
 
     "agent_loop": {
         "model": "deepseek_v4_pro",
-        "max_consecutive_loops": 50,
         "idle_interval_seconds": 30
     },
 
@@ -17,7 +16,7 @@
 
     "perception": {
         "ticker_interval": 2.0,
-        "terrain_interval": 30.0
+        "terrain_interval": 300.0
     },
 
     "perception_llm": {
@@ -41,7 +40,6 @@
         "model": "deepseek_v4_flash_think",
         "consolidate_interval": 25,
         "crystallize_min_consolidations": 5,
-        "enable_crystallize": true,
 
         "dream_interval": 10,
         "dream_min_nodes": 30,
@@ -56,10 +54,8 @@
         "weak_edge_weight_threshold": 0.1,
         "weak_edge_age_days": 3,
 
-        "retrieval_top_k": 8,
         "retrieval_max_depth": 2,
         "crystallize_context_top_k": 10,
-        "semantic_seed_top_k": 5,
         "embedding_similarity_threshold": 0.3
     },
 
