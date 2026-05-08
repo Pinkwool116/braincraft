@@ -1,167 +1,413 @@
-# 神经符号记忆扩展计划
+# 意图层神经符号记忆扩展计划
 
-目标：把 WALL-E 2.0 的神经符号方法作为当前记忆系统的旁路扩展，用于两类校验：
+目标：先只在 **Agent Loop 意图层** 实现 WALL-E 风格的神经符号校验。代码层先不做，等意图层调试稳定后再考虑迁移。
 
-1. **Agent Loop 层的意图/步骤可行性校验**：高层模型提出 `execute_step` 的自然语言步骤后，先判断该意图在当前游戏状态下是否可能成功。
-2. **Coding Agent 的代码生成校验**：Coding LLM 生成 JavaScript 后，执行前检查稳定的 Mineflayer/项目技能库代码错误模式。
+这个模块的职责不是生成代码，也不是检查生成后的 JavaScript，而是在 Agent Loop 准备调用 `execute_step` 前，对自然语言步骤做三件事：
 
-核心原则仍然是：**神经符号模块与现有 MemoryRouter / GraphEngine 解耦**。它有自己的 Rule Store 和 transition buffer，只通过明确接口读取状态、执行结果和少量检索上下文。长期记忆图谱最多保存规则摘要引用，不保存完整规则，也不承担规则执行。
+1. 判断这个意图在当前环境下是否可行。
+2. 给出执行层可用的高层指导，例如建议使用哪个已有 `skills/world` 函数或避免哪类策略。
+3. 在执行完成后重新判定“意图是否达成、是否部分达成、是否值得继续”，而不是直接相信执行层返回的 `success=true/false`。
+
+核心原则：神经符号模块与 `MemoryRouter / GraphEngine / WorkingMemory` 解耦。它有自己的 transition buffer、Rule Store 和判定逻辑，只通过接口读取当前上下文、记录执行结果、向 Agent Loop 返回约束和建议。长期图谱最多保存规则摘要引用，不保存完整规则，也不承担规则执行。
 
 ---
 
 ## 依据与边界
 
-WALL-E 2.0 的核心机制是从真实轨迹和 world model 预测轨迹的成功/失败差异中归纳符号知识，包括 action rules、knowledge graph、scene graph，再把这些知识翻译成可执行代码规则，并用最大覆盖剪枝保留最有用的规则。论文把规则用于校准 LLM world model 对 `(observation, action)` 是否成功的预测，而不是直接训练策略或保存大量原始轨迹。见论文 [3.1 NeuroSymbolic Learning of Code Rules](https://arxiv.org/html/2504.15785v1)。
+WALL-E 2.0 的核心思想是从真实轨迹和 world model 预测轨迹的成功/失败差异中归纳符号规则，再把规则编译成可执行校验函数，并用最大覆盖剪枝保留有用规则。其重点是校准“动作在某个状态下是否会成功”的预测，而不是保存更多文本记忆。见论文 [3.1 NeuroSymbolic Learning of Code Rules](https://arxiv.org/html/2504.15785v1)，代码demo[WALL-E 仓库](https://github.com/elated-sawyer/WALL-E)。
 
-官方 demo 代码比较简化：`Demo/ruleminer.py` 主要按 `act_name` 对 transition buffer 分批做规则新增和规则改进；`Demo/buffer.py` 通过 `exec()` 加载规则函数，并在 world model 预测阶段依次运行规则函数。见 [WALL-E 仓库](https://github.com/elated-sawyer/WALL-E)、[ruleminer.py](https://raw.githubusercontent.com/elated-sawyer/WALL-E/main/Demo/ruleminer.py)、[buffer.py](https://raw.githubusercontent.com/elated-sawyer/WALL-E/main/Demo/buffer.py)。
+本项目当前更适合先做 **one-step 意图校验**：
 
-因此，本项目可借鉴的是：
+```text
+当前状态 + 当前任务 + step_description
+  -> 意图解析
+  -> 环境可行性校验
+  -> 执行建议
+  -> execute_step
+  -> 意图达成度复核
+  -> transition 记录和规则学习
+```
 
-- 从执行轨迹归纳紧凑规则，而不是把所有失败经历都塞进 prompt。
-- 规则必须可执行、可评估、可剪枝。
-- 规则优先服务于“动作是否会成功”的预测/校验。
+暂不做：
 
-需要调整的是：
+- 代码生成后的静态规则检查。
+- Coding LLM 内部 retry。
+- 多步 MPC / 候选轨迹搜索。
+- GraphEngine 的 `NodeType/EdgeRelation` 扩展。
 
-- **代码模式校验不是 WALL-E 原生目标**，而是本项目因为存在 Coding LLM 和 Mineflayer API 才引入的工程扩展。
-- 环境规则和代码模式规则可以共用 Rule Store、LLM 归纳、DSL 编译、剪枝指标，但 transition 抽取和验证器输入不同，不能强行说是完全同一管道。
-- 不能照搬 demo 的 `exec()` 执行规则函数；本项目第一阶段应使用 JSON DSL + 本地解释器，避免执行 LLM 生成的任意 Python。
-
----
-
-## 对原计划中不准确/不合理处的修正
-
-1. **“crystallize 之后再提取 transition”不合适**
-
-   当前 `MemoryRouter.crystallize()` 会把 working memory 蒸馏进图谱，然后清空 working memory。transition 需要保留执行前后状态、生成代码、错误、输出、意图验证结果，这些结构化信息应在 `execute_step` 执行边界直接记录，而不是等 crystallize 后从摘要里反推。
-
-2. **“预检接口同时检查环境规则和代码模式规则”时序不对**
-
-   Agent Loop 产出的只有自然语言 `step_description`，此时还没有代码。环境意图可行性可以在 Coding LLM 调用前检查；代码模式规则必须在 `ExecutionLayer.execute_step()` 中，Coding LLM 生成 `code` 之后、真正 IPC 执行之前检查。
-
-3. **“代码模式规则可更早设为硬约束”表述过强**
-
-   Mineflayer API 相对稳定，但项目大量使用 `skills.*` 和 `world.*` 封装，很多错误与任务上下文、游戏状态、封装函数行为有关。代码规则可以先做强提示和 lint-like warning，只有低误杀率、稳定复现的规则才进入 hard block。
-
-4. **“完整规则摘要写入 pattern 节点并改 graph_retriever 加权”会削弱解耦**
-
-   当前 `GraphRetriever.spread_activation()` 只做图扩散和权重衰减，没有按 metadata subtype 加权的机制。为了保持解耦，第一阶段不修改图检索器。Rule Store 自己提供检索接口；长期图谱只在后期可选写入摘要 pattern，用于让普通记忆召回时能发现“有相关规则存在”。
-
-5. **“KG/Scene Graph 直接写入现有长期图谱”与独立规则模块目标冲突**
-
-   现有 `NodeType` 只有 `event/place/person/item/time/pattern/thought/community`，`EdgeRelation` 也没有 `REQUIRES/CONSUMES/ENABLES`。第一阶段不要扩展 GraphEngine 枚举；KG constraint 和 scene fact 先存在 Rule Store 内部。等规则稳定后，再考虑把摘要或事实映射到现有 `item/place/pattern` 节点。
-
-6. **“意图分类自动扩展类别”过早**
-
-   当前系统没有规则审核、人类确认或离线评估闭环。LLM 自动新增 intent category 容易导致类别漂移。第一阶段使用固定类别 + 低置信 fallback；新类别只记录到候选日志，不参与 hard guard。
-
-7. **“MPC”不应作为早期目标**
-
-   当前 Agent Loop 是工具调用循环，不是候选轨迹规划器。早期只做 one-step guard：当前步骤被判定不可行时，把失败原因作为工具结果交还 Agent Loop 重新决策。多步 look-ahead/MPC 放到最后。
+代码层以后可以复用 Rule Store、DSL 和 transition 记录思路，但本阶段计划只覆盖意图层。
 
 ---
 
-## 当前代码中的真实接入点
-
-### Agent Loop 层
+## 当前代码中的接入点
 
 相关文件：
 
 - `braincraft/agent/brain/agent_brain/agent_loop_layer.py`
 - `braincraft/agent/brain/tools/execute_step_tool.py`
+- `braincraft/agent/brain/agent_brain/execution_layer.py`
 - `braincraft/agent/prompts/agent_loop/system.md`
+- `braincraft/agent/prompts/data_providers.py`
+- `braincraft/agent/prompts/variable_config.yaml`
 
-当前流程是：
+当前 Agent Loop 决策流程：
 
 ```text
-build_prompt()
-  -> Agent Loop LLM 选择工具
+AgentLoopLayer.build_prompt()
+  -> Agent Loop LLM 输出工具调用
   -> parse_tool_call()
   -> execute_tool()
-  -> ExecuteStepTool.execute()
+  -> ExecuteStepTool.execute({"step_description": ...})
   -> ExecutionLayer.execute_step(step_description)
 ```
 
-适合加入两处环境规则能力：
+推荐接入点：
 
-1. **意图生成前的软约束检索**
-   在 `AgentLoopLayer.build_prompt()` 中根据当前 `state + todolist + draft + last_tool_result` 调用 `neurosymbolic.retrieve_rules(domain="environment")`，把少量高置信规则注入 Agent Loop prompt。作用是让高层模型在生成步骤前就避开明显不可行意图。
+1. **决策前规则召回**
 
-2. **步骤执行前的硬/软预检**
-   在 `ExecuteStepTool.execute()` 或 `ExecutionLayer.execute_step()` 开头调用：
+   在 `AgentLoopLayer.build_prompt()` 中加入：
 
    ```python
-   precheck_step(step_description, current_state) -> GuardResult
+   neurosymbolic_context = await ns_service.retrieve_intent_context(decision_context)
    ```
 
-   如果是 hard block，直接返回：
+   将少量高置信环境规则和当前建议注入 Agent Loop prompt。作用是让 Agent Loop 在生成 `execute_step` 之前就避开明显不可行步骤。
 
-   ```json
-   {
-     "success": false,
-     "failure_reason": "precondition",
-     "error": "神经符号规则判定当前步骤不可行：缺少 stone_pickaxe",
-     "suggestion": "先合成或装备 stone_pickaxe，再挖 iron_ore"
-   }
-   ```
+2. **execute_step 前预检**
 
-   这样 Agent Loop 会在下一轮看到工具失败结果并重新决策，符合当前“Execution Layer 不内部重试”的架构。
-
-### Coding Agent / Execution Layer
-
-相关文件：
-
-- `braincraft/agent/brain/agent_brain/execution_layer.py`
-- `braincraft/agent/prompts/execution_layer/coding.md`
-- `braincraft/agent/bridge/minecraft_bridge.js`
-- `braincraft/src/agent/library/skills.js`
-
-当前 `ExecutionLayer.execute_step()` 流程是：
-
-```text
-_build_coding_prompt(step_description)
-  -> Coding LLM
-  -> _parse_coding_response()
-  -> _validate_code()
-  -> _inject_interrupt_checks()
-  -> _execute_code()
-```
-
-适合加入两处代码规则能力：
-
-1. **代码生成前的规则提示**
-   在 `_build_execution_context()` 或 `_build_coding_prompt()` 中追加：
+   在 `ExecuteStepTool.execute()` 中调用：
 
    ```python
-   retrieve_rules(domain="code_pattern", query=step_description)
+   guard = await ns_service.precheck_intent(step_description, decision_context)
    ```
 
-   用于提示 Coding LLM 避免已知模式，例如缺少 `await`、错误使用不存在的 `skills/world` 函数、坐标参数写错等。
+   如果 `guard.action == "block"`，不调用 Execution Layer，直接返回一个结构化失败结果给 Agent Loop。
 
-2. **生成代码后的静态/DSL 校验**
-   在 `_parse_coding_response()` 后、现有 `_validate_code()` 前后调用：
+   如果 `guard.action == "advise"`，允许执行，但把建议写入 `draft.md` 或追加到传给执行层的上下文中。由于当前 `execute_step` 只接受自然语言步骤，不接受额外字段，最保守做法是让 Agent Loop 先通过 `draft` 工具写入指导；后续也可以让 `ExecutionLayer._build_execution_context()` 读取神经符号建议。
+
+3. **execute_step 后复核**
+
+   在 `ExecutionLayer.execute_step()` 返回后，或在 `ExecuteStepTool.execute()` 包装层中调用：
 
    ```python
-   validate_code(step_description, intent, code, current_state) -> GuardResult
+   verdict = await ns_service.verify_intent_result(step_description, pre_state, execution_result, post_state)
    ```
 
-   失败时不要直接执行代码。第一阶段返回失败结果交给 Agent Loop；后期可以考虑在 Execution Layer 内做一次带规则反馈的重新生成，但这会改变当前“无内部 retry”的边界，应单独设计。
+   这个 verdict 才是意图层 transition 的核心标签。它不等同于执行层 `success`。
 
-### Transition 记录
+---
 
-当前 JS bridge 成功执行时会返回：
+## 判定输入：使用尽可能丰富的环境信息
+
+神经符号判定不能只看 inventory。它应接近 `decision_loop` 当前提示词能看到的完整环境。
+
+当前 Agent Loop 已注入的环境变量包括：
+
+- `STATS`: 生命值、饥饿值、位置等机器人状态
+- `INVENTORY`: 物品栏
+- `BIOME`: 当前生物群系
+- `TIME_OF_DAY`, `WORLD_DAY`: 时间与世界天数
+- `BLOCK_BELOW`, `BLOCK_LEGS`, `BLOCK_HEAD`, `BLOCK_ABOVE`: 身体周围关键方块
+- `NEARBY_BLOCKS`: 附近方块
+- `NEARBY_ENTITIES`: 附近实体
+- `WORKING_MEMORY`: 近期经历和 observation
+- `LONG_TERM_MEMORY`: 相关长期记忆图谱切片
+- `PLAN_FILE`, `TODOLIST_FILE`, `DRAFT_FILE`: 当前目标、短期待办和执行层技术指导
+- `LAST_TOOL_RESULT`: 上一轮工具结果
+- `CHAT_HISTORY`, `PENDING_CHAT`: 社交和玩家指令上下文
+
+因此，神经符号模块内部应构造一个 `DecisionContext`，而不是只传 `state`：
 
 ```json
 {
-  "success": true,
-  "output": "...",
-  "state_before": {"position": ..., "health": ..., "food": ..., "inventory": ...},
-  "state_after": {"position": ..., "health": ..., "food": ..., "inventory": ...},
-  "changes": {"position_changed": true, "inventory_changed": false}
+  "state": {
+    "position": {},
+    "health": 20,
+    "food": 20,
+    "inventory": {},
+    "equipment": {},
+    "biome": "plains",
+    "time_of_day": 6000,
+    "world_day": 0,
+    "weather": "Clear",
+    "nearby_blocks": [],
+    "nearby_entities": [],
+    "surrounding_blocks": {
+      "below": "grass_block",
+      "legs": "air",
+      "head": "air",
+      "firstAbove": "none"
+    }
+  },
+  "task_context": {
+    "plan": "...",
+    "todolist": "...",
+    "draft": "...",
+    "last_tool_result": {}
+  },
+  "memory_context": {
+    "working_memory": "...",
+    "long_term_memory": "..."
+  },
+  "chat_context": {
+    "recent_chat": "...",
+    "pending_chat": "..."
+  }
 }
 ```
 
-失败时目前主要返回 `error/error_stack/output`，不稳定包含执行前后状态。因此 transition recorder 不能只依赖 JS 返回值。Python 侧应在 `ExecutionLayer.execute_step()` 开始时从 `shared_state.get_all()` 捕获 `pre_state`，执行结束后再读取一次 `post_state`，与 JS 返回的 `state_before/state_after` 互补。
+短期实现上，`DecisionContext` 可以直接由 `AgentLoopLayer.build_prompt()` 已经拿到的 `state / todolist / plan / draft / last_tool_result` 组装；`WORKING_MEMORY` 和 `LONG_TERM_MEMORY` 可以通过 `MemoryRouter` 同步或异步检索获得。
+
+---
+
+## 意图表示
+
+`step_description` 需要被解析成结构化意图，供规则判断和结果复核使用。
+
+```json
+{
+  "raw_step": "找到附近最近的橡树并收集 10 个橡木原木",
+  "category": "collect_block",
+  "target": "oak_log",
+  "quantity": 10,
+  "location_constraint": "nearby",
+  "success_criteria": {
+    "inventory_delta": {"oak_log": 10},
+    "acceptable_min_delta": {"oak_log": 1},
+    "partial_threshold": 0.5
+  },
+  "risk_factors": ["night", "hostile_mobs_nearby"],
+  "execution_guidance": {
+    "suggested_functions": ["world.getNearestBlock", "skills.breakBlockAt"],
+    "avoid_strategies": ["blind wandering without checking nearby blocks"],
+    "notes": "若附近只有少量橡木，收集到部分数量也算有效进展，下一轮继续搜索。"
+  },
+  "confidence": 0.82
+}
+```
+
+第一阶段固定类别即可，避免 LLM 自动扩展导致漂移：
+
+```text
+collect_block, mine_block, craft_item, place_block, move_to,
+attack_entity, collect_item, build_structure, smelt_item,
+explore_area, equip_item, eat_food, store_item, wait, inspect
+```
+
+意图分类流程：
+
+```text
+step_description
+  -> 规则/关键词解析 category、target、quantity
+  -> LLM 在固定类别中补全不确定字段
+  -> 低置信则 category="unknown"，只记录 transition，不做 hard block
+```
+
+---
+
+## 预检输出
+
+预检不只是 `pass/fail`，而是给 Agent Loop 一个可执行的决策建议。
+
+```json
+{
+  "action": "allow | advise | block | ask_inspect | rewrite_step",
+  "reason": "precondition | insufficient_context | high_risk | already_satisfied | inefficient_strategy",
+  "confidence": 0.84,
+  "matched_rules": ["env_collect_oak_requires_nearby_oak_or_search_plan"],
+  "feedback": "附近方块列表中没有 oak_log，直接收集 10 个橡木原木成功率低。",
+  "suggestion": "先 inspect_surroundings 或 scan_terrain 搜索树木；如果目标是任意木头，可改为收集附近可见树种。",
+  "execution_guidance": {
+    "suggested_functions": ["world.getNearestBlock", "skills.collectBlock", "skills.breakBlockAt"],
+    "avoid_strategies": ["直接假设 oak_log 在附近"],
+    "draft_patch": "本步先检查 nearby_blocks/world.getNearestBlock；若没有 oak_log，改找 birch_log/spruce_log 或返回未找到。"
+  }
+}
+```
+
+`action` 含义：
+
+- `allow`: 不干预，直接执行。
+- `advise`: 可以执行，但建议写入 draft 或 execution context。
+- `block`: 当前意图明显不可行，返回失败给 Agent Loop，让它重新决策。
+- `ask_inspect`: 环境信息不足，建议先调用 `inspect_surroundings` 或 `scan_terrain`。
+- `rewrite_step`: 当前步骤描述过大或目标不清，建议 Agent Loop 改写为更可验证的一步。
+
+这比单纯 hard guard 更适合早期调试：规则不成熟时先减少误杀；规则足够确定时再 block。
+
+---
+
+## 更好的结果判定方法
+
+执行层返回的 `success` 只能说明代码执行是否报错或是否被中断，不能直接代表意图是否完成。
+
+需要把结果拆成四层：
+
+```json
+{
+  "execution_status": "completed | runtime_error | interrupted | blocked | timeout",
+  "intent_status": "achieved | partially_achieved | not_achieved | over_achieved | unknown",
+  "progress": {
+    "target": "oak_log",
+    "requested": 10,
+    "actual_delta": 5,
+    "ratio": 0.5
+  },
+  "side_effects": {
+    "health_delta": 0,
+    "food_delta": -1,
+    "position_changed": true,
+    "new_risk": []
+  },
+  "next_recommendation": "continue_same_intent | retry_with_guidance | replan | inspect | stop",
+  "reason": "收集到 5/10 个 oak_log，虽然未达到数量目标，但已经取得有效进展。建议继续搜索附近树木。"
+}
+```
+
+### 判定原则
+
+1. **数量型目标按完成度判定**
+
+   “挖 10 个木头但只挖 5 个”不应简单记为失败。应判为：
+
+   ```text
+   execution_status = completed
+   intent_status = partially_achieved
+   progress.ratio = 0.5
+   next_recommendation = continue_same_intent
+   ```
+
+   这类 transition 对规则学习很重要：它说明当前策略有用，但环境资源不足或步骤目标过大。
+
+2. **代码无异常但世界状态没变，不算意图达成**
+
+   例如步骤是“挖铁矿”，执行层 `success=true`，但 inventory 没增加、附近铁矿仍存在、输出也没有 “Broke iron_ore”。应判为 `not_achieved` 或 `unknown`，并记录原因。
+
+3. **执行层失败但意图可能部分达成**
+
+   例如代码最后超时或被中断，但已经采到 3 个木头。应判为 `partially_achieved`，同时保留 `execution_status=timeout/interrupted`。
+
+4. **安全和副作用单独记录**
+
+   如果目标达成但生命值大幅下降、掉进洞里、进入夜晚高风险区域，不能简单当作完美成功。规则学习需要知道“能完成但代价高”。
+
+5. **无法验证时显式 unknown**
+
+   某些目标如“探索附近区域”没有直接 inventory delta。需要依赖 position delta、scan 结果、working memory observation 或输出日志。证据不足时不要强行标成功/失败。
+
+### 常见意图的验证信号
+
+| 意图类型 | 主要验证信号 | 部分成功示例 |
+|---|---|---|
+| `collect_block` / `mine_block` | inventory delta、方块破坏日志、nearby_blocks 变化 | 目标 10 个，获得 1-9 个 |
+| `craft_item` | inventory 目标物增加、材料减少、输出日志 | 目标 4 个，只合成 1 个 |
+| `place_block` | 目标方块出现在周围/指定位置、inventory 减少 | 放置了部分结构 |
+| `move_to` | position 接近目标、biome/landmark 改变 | 距离目标明显缩短但未到达 |
+| `attack_entity` | 实体消失、掉落物出现、health side effect | 杀死部分目标或造成战斗进展 |
+| `explore_area` | position delta、new blocks/entities、terrain scan | 发现部分资源但未找到目标 |
+| `inspect` | scan/inspection result 非空 | 信息不足但获得新环境数据 |
+
+---
+
+## Transition 结构
+
+transition 在意图层记录，不依赖 `crystallize()` 后从摘要中反推。
+
+```json
+{
+  "transition_id": "uuid",
+  "step_description": "找到附近最近的橡树并收集 10 个橡木原木",
+  "decision_context": {
+    "state": {},
+    "task_context": {},
+    "memory_context": {}
+  },
+  "intent": {
+    "category": "collect_block",
+    "target": "oak_log",
+    "quantity": 10,
+    "success_criteria": {}
+  },
+  "precheck": {
+    "action": "advise",
+    "matched_rules": [],
+    "execution_guidance": {}
+  },
+  "execution_result": {
+    "success": false,
+    "output": "...",
+    "error": "Execution timeout",
+    "state_before": {},
+    "state_after": {}
+  },
+  "post_state": {},
+  "intent_verdict": {
+    "execution_status": "timeout",
+    "intent_status": "partially_achieved",
+    "progress": {"target": "oak_log", "requested": 10, "actual_delta": 5, "ratio": 0.5},
+    "next_recommendation": "continue_same_intent",
+    "reason": "超时前已经获得 5 个 oak_log。"
+  },
+  "learnable_failure_modes": [
+    "quantity_too_large_for_single_step",
+    "nearby_resource_insufficient"
+  ]
+}
+```
+
+注意：Python 侧应在调用执行层前后各读一次 `shared_state.get_all()`，不要只依赖 JS bridge 的 `state_before/state_after`。当前 JS 成功结果有前后状态，失败结果不稳定包含状态；Python 侧快照可以补齐。
+
+---
+
+## Rule Store 与 DSL
+
+规则只覆盖意图层环境判断和结果判定。
+
+规则记录示例：
+
+```json
+{
+  "rule_id": "intent_collect_oak_requires_visible_or_searchable_tree",
+  "domain": "intent_environment",
+  "intent_category": "collect_block",
+  "description": "收集指定树种前，应先确认 nearby_blocks 中有该树种，或步骤中包含搜索策略。",
+  "dsl": {
+    "all": [
+      {"eq": ["intent.category", "collect_block"]},
+      {"target_tag": "log"},
+      {"not_nearby_block": "intent.target"},
+      {"not_step_mentions_any": ["寻找", "搜索", "search", "nearest", "附近最近"]}
+    ],
+    "result": {
+      "action": "ask_inspect",
+      "feedback": "附近未确认存在目标树种。",
+      "suggestion": "先检查附近方块或把步骤改成'寻找最近的目标树并收集'。"
+    }
+  },
+  "support_count": 3,
+  "counterexample_count": 0,
+  "confidence": 0.78,
+  "hard_block": false
+}
+```
+
+DSL 第一阶段使用 JSON 白名单解释器：
+
+```text
+eq, neq, gt, gte, lt, lte,
+contains, not_contains,
+step_mentions_any, not_step_mentions_any,
+inventory_has, inventory_lacks,
+equipment_is, equipment_at_least,
+nearby_block, not_nearby_block,
+nearby_entity, surrounding_block_is,
+health_below, food_below,
+time_is, biome_is,
+last_result_status_is,
+progress_ratio_at_least
+```
+
+暂不执行 LLM 生成的 Python。规则先以“可解释、可回放、可剪枝”为优先。
 
 ---
 
@@ -172,304 +418,137 @@ _build_coding_prompt(step_description)
 ```text
 braincraft/agent/neurosymbolic/
   __init__.py
-  service.py                 # 对外门面：precheck_step / validate_code / record_transition / retrieve_rules
-  schemas.py                 # GuardResult, Intent, Transition, RuleRecord
-  intent_classifier.py       # 固定类别 + 低置信 LLM fallback
-  transition_recorder.py     # 执行前后状态、代码、错误、输出、意图结果
-  intent_verifier.py         # 判断代码成功但意图是否达成
-  rule_store.py              # bots/{agent}/neurosymbolic/*.json
-  rule_miner.py              # LLM 归纳文本规则
-  rule_compiler.py           # 文本规则 -> JSON DSL
-  rule_validator.py          # DSL 解释器
+  service.py                 # retrieve_intent_context / precheck_intent / verify_intent_result / record_transition
+  schemas.py                 # DecisionContext, Intent, GuardResult, IntentVerdict, Transition
+  decision_context.py        # 从 state + plan/todolist/draft/memory/last_result 组装判定上下文
+  intent_classifier.py       # 固定类别解析 + LLM fallback
+  intent_prechecker.py       # 规则预检，输出 allow/advise/block/ask_inspect/rewrite_step
+  intent_verifier.py         # 执行后复核 achieved/partial/not/unknown
+  transition_recorder.py     # JSONL 记录
+  rule_store.py              # 独立规则存储
+  rule_validator.py          # JSON DSL 解释器
+  rule_miner.py              # LLM 从 transitions 归纳意图规则
   rule_pruner.py             # 最大覆盖剪枝
 ```
 
-存储建议：
+存储：
 
 ```text
 bots/{agent}/neurosymbolic/
-  transitions.jsonl
-  rules_environment.json
-  rules_code_pattern.json
-  rule_metrics.json
+  intent_transitions.jsonl
+  intent_rules.json
+  intent_rule_metrics.json
   intent_candidates.json
 ```
 
-不要把完整规则存入 `memory_graph/`。如果后期需要与图谱联动，只写入类似下面的摘要节点：
+与 MemoryRouter 的关系：
 
-```json
-{
-  "type": "pattern",
-  "content": "规则摘要：挖 iron_ore 前需要 stone_pickaxe 或更高等级镐",
-  "metadata": {
-    "source": "neurosymbolic",
-    "rule_id": "env_mine_iron_requires_stone_pickaxe",
-    "domain": "environment"
-  }
-}
-```
+- 读取 working memory / long-term memory 作为上下文证据。
+- 执行后可以把意图判定摘要写入 working memory，方便 Agent Loop 下一轮读到。
+- 不修改 `crystallize()` 内部逻辑。
+- 后期可选把稳定规则摘要写入 `pattern` 节点，但完整规则仍在 Rule Store。
 
 ---
 
-## 规则域设计
+## 反馈给 Agent Loop 的方式
 
-### 1. 环境规则域
+意图层神经符号模块的输出应该能驱动 Agent Loop 改行为。
 
-用途：判断自然语言步骤对应的意图在当前状态下是否可行。
+### 预检失败
 
-输入：
-
-```json
-{
-  "step_description": "挖掘附近的 3 块铁矿石",
-  "intent": {"category": "mine", "target": "iron_ore", "quantity": 3},
-  "state": {
-    "inventory": {},
-    "equipment": {"mainHand": "wooden_pickaxe"},
-    "nearby_blocks": [],
-    "biome": "plains"
-  }
-}
-```
-
-输出：
+返回工具结果：
 
 ```json
 {
-  "pass": false,
-  "domain": "environment",
+  "success": false,
+  "neurosymbolic_guard": true,
   "failure_reason": "precondition",
-  "matched_rules": ["env_mine_iron_requires_stone_pickaxe"],
-  "feedback": "当前工具不足，挖 iron_ore 很可能失败。",
-  "suggestion": "先合成并装备 stone_pickaxe 或更高等级镐。",
-  "confidence": 0.86,
-  "hard_block": false
+  "feedback": "没有可见 oak_log，直接收集 10 个橡木原木成功率低。",
+  "suggestion": "先 inspect_surroundings 搜索树木，或改为收集附近任意原木。"
 }
 ```
 
-环境规则第一阶段默认不 hard block，只作为强提示；对确定性非常高且有足够样本支持的规则再升级。
+### 预检建议
 
-### 2. 代码模式域
+建议进入 draft 或 execution context：
 
-用途：检查生成的 JavaScript 是否违反稳定的项目代码/技能库约束。
+```text
+神经符号建议：
+- 目标：收集 10 个 oak_log
+- 先用 world.getNearestBlock / nearby_blocks 确认 oak_log
+- 若附近 oak_log 不足，收集部分数量后返回已获得数量，不要把部分成功当作完全失败
+```
 
-输入：
+### 执行后复核
+
+在 `LAST_TOOL_RESULT` 或 working memory 中保留：
 
 ```json
 {
-  "step_description": "在当前位置下方挖一格",
-  "intent": {"category": "mine", "target": "block_below"},
-  "code": "await skills.breakBlockAt(bot, p.x, p.y - 1, p.x);",
-  "state": {}
+  "intent_status": "partially_achieved",
+  "progress": "5/10 oak_log",
+  "recommendation": "继续同一意图，但把目标改为再收集 5 个，或先搜索更密集树林。"
 }
 ```
 
-输出：
-
-```json
-{
-  "pass": false,
-  "domain": "code_pattern",
-  "failure_reason": "code_pattern",
-  "matched_rules": ["code_breakblockat_z_arg_not_x"],
-  "feedback": "skills.breakBlockAt(bot, x, y, z) 的第三个坐标参数疑似误用了 x。",
-  "suggestion": "改为 await skills.breakBlockAt(bot, p.x, p.y - 1, p.z);",
-  "confidence": 0.92,
-  "hard_block": true
-}
-```
-
-代码规则更适合与现有 `_validate_code()` 并列：现有校验处理禁止模式和函数存在性，神经符号校验处理从历史失败中学到的更具体模式。
+这样 Agent Loop 下一轮可以继续、改写步骤或重新规划，而不是被执行层的布尔 success 误导。
 
 ---
 
-## Transition 结构
+## 评估指标
 
-```json
-{
-  "transition_id": "uuid",
-  "timestamp": 0,
-  "step_description": "挖掘附近的 3 块铁矿石",
-  "intent": {
-    "category": "mine",
-    "target": "iron_ore",
-    "quantity": 3,
-    "confidence": 0.78
-  },
-  "pre_state": {
-    "position": {},
-    "biome": "unknown",
-    "inventory": {},
-    "equipment": {},
-    "health": 20,
-    "food": 20,
-    "nearby_blocks": [],
-    "nearby_entities": []
-  },
-  "code": "...",
-  "execution": {
-    "code_success": true,
-    "output": "...",
-    "error": "",
-    "error_stack": "",
-    "error_signature": null
-  },
-  "post_state": {
-    "position": {},
-    "inventory": {}
-  },
-  "intent_result": {
-    "intent_achieved": false,
-    "state_delta": {"inventory": {"iron_ore": 0}},
-    "reason": "代码无异常，但目标物品数量未增加"
-  },
-  "failure_reason": "none | precondition | code_pattern | intent_not_achieved | runtime_error",
-  "rule_hits": []
-}
-```
+只评估意图层。
 
-关键点：`success=True` 只能说明 JS 没抛异常，不一定说明意图达成。必须增加 `IntentVerifier`，基于执行前后 inventory、position、health、nearby state 和输出日志做弱验证。
-
----
-
-## Intent 分类策略
-
-第一阶段使用固定类别，避免类别漂移：
-
-```text
-mine, craft, place, move_to, attack, collect, build, smelt, explore, equip, eat, store, wait, chat, inspect
-```
-
-流程：
-
-```text
-step_description
-  -> 关键词/正则规则匹配
-  -> 低置信时 LLM 在固定类别中选择
-  -> 仍低置信则 category="unknown"，只记录 transition，不用于 hard guard
-```
-
-LLM 提案的新类别只写入 `intent_candidates.json`，不自动参与规则执行。等有评估指标后再考虑候选提升。
-
----
-
-## Rule Store 与 DSL
-
-规则记录：
-
-```json
-{
-  "rule_id": "env_mine_iron_requires_stone_pickaxe",
-  "domain": "environment",
-  "intent_category": "mine",
-  "description": "挖 iron_ore 需要 stone_pickaxe 或更高等级镐",
-  "dsl": {
-    "all": [
-      {"eq": ["intent.category", "mine"]},
-      {"eq": ["intent.target", "iron_ore"]},
-      {"not_inventory_tool_at_least": "stone_pickaxe"}
-    ],
-    "result": {
-      "pass": false,
-      "feedback": "当前工具不足，挖 iron_ore 很可能失败。",
-      "suggestion": "先合成或装备 stone_pickaxe。"
-    }
-  },
-  "support_count": 4,
-  "counterexample_count": 0,
-  "confidence": 0.86,
-  "hard_block": false,
-  "covered_transition_ids": []
-}
-```
-
-DSL 第一阶段只支持白名单操作：
-
-```text
-eq, neq, contains, not_contains, any, all,
-inventory_has, inventory_lacks,
-equipment_is, nearby_block_exists,
-state_delta_matches,
-code_contains, code_regex,
-function_call_exists
-```
-
-不要在第一阶段执行 LLM 生成的 Python。后期如确实需要 Python AST 规则，也应先做白名单 AST 校验和隔离执行。
-
----
-
-## 剪枝与评估
-
-按 domain 分开统计，避免环境规则和代码规则互相污染。
-
-指标：
-
-- `prediction_accuracy`: 规则对 transition 成功/失败预测的准确率
-- `rule_coverage`: 失败 transition 中有多少被规则解释
-- `false_block_rate`: 规则预测失败但后续证明可成功的比例
-- `repeat_error_rate`: 同类失败是否减少
-- `code_retry_rate`: 因代码规则返回失败后重新生成代码的频率
-- `planning_revision_rate`: 因环境规则反馈导致 Agent Loop 改步骤的频率
-
-剪枝：
-
-```text
-1. 过滤 support_count 太低或 counterexample 太多的规则
-2. 合并同 domain 下语义/DSL 等价规则
-3. 用 greedy maximum coverage 选择能覆盖最多失败 transition 的规则子集
-4. 对 hard_block 规则使用更严格的 false_block_rate 阈值
-```
+- `precheck_precision`: 被 block/ask_inspect 的步骤中，后续证明确实不可行或信息不足的比例
+- `false_block_rate`: 被规则阻止但实际可成功的比例
+- `partial_success_detection_rate`: 部分成功是否被正确识别
+- `intent_verdict_accuracy`: achieved/partial/not/unknown 的人工抽样准确率
+- `repeat_failure_rate`: 同类不可行意图是否减少
+- `planning_revision_rate`: Agent Loop 因神经符号反馈改写步骤的频率
+- `task_progress_delta`: 引入意图层校验后任务推进是否更稳定
 
 ---
 
 ## 实施步骤
 
-### 阶段一：旁路记录与软提示
+### 阶段一：只记录，不干预
 
-- 新建 `neurosymbolic` 包、Rule Store、transition buffer。
-- 在 `BrainCoordinator` 初始化服务，并传给 Agent Loop / Execution Layer。
-- 在 `ExecutionLayer.execute_step()` 前后记录 transition，先不改变行为。
-- 在 Agent Loop prompt 和 Coding prompt 中注入少量高置信手写规则/历史规则文本。
+- 新建 `neurosymbolic` 包和 `intent_transitions.jsonl`。
+- 在 `execute_step` 前后记录 `DecisionContext / Intent / execution_result / IntentVerdict`。
+- 实现基础 Intent Classifier 和 Intent Verifier。
+- 先不 block，只观察判定质量。
 
-### 阶段二：环境意图预检
+### 阶段二：软预检和执行指导
 
-- 实现固定类别 Intent Classifier。
-- 实现环境规则 JSON DSL 和解释器。
-- 在 `ExecuteStepTool` 或 `ExecutionLayer.execute_step()` 开头加入 `precheck_step()`。
-- 默认 soft guard；确定性规则可配置为 hard block。
+- 实现 `retrieve_intent_context()`，把高置信规则注入 Agent Loop prompt。
+- 实现 `precheck_intent()`，只输出 `allow/advise/ask_inspect/rewrite_step`。
+- 将 `execution_guidance` 写入 draft 或 execution context，指导执行层用合适函数。
 
-### 阶段三：代码模式校验
+### 阶段三：有限 hard guard
 
-- 从代码、错误栈、输出日志中抽取 error signature。
-- 实现 `validate_code()`，接入 `_parse_coding_response()` 后、实际执行前。
-- 先返回 warning/失败结果，不在 Execution Layer 内部做自动多轮 retry。
+- 对确定性高的规则启用 `block`，例如缺少必要材料、生命值过低还要战斗、目标方块完全不在可见/可搜索范围且步骤没有搜索策略。
+- 加入 false block 监控，误杀高的规则自动降级为 advise。
 
-### 阶段四：规则归纳与剪枝
+### 阶段四：规则学习和剪枝
 
-- 用 LLM 从 transitions 分 domain 归纳文本规则。
-- 编译为 JSON DSL，离线回放 transitions 计算 coverage/counterexample。
-- 引入最大覆盖剪枝，生成 active rule set。
+- 从 transition 中归纳意图层规则。
+- 编译成 JSON DSL 并离线回放历史 transitions。
+- 用 coverage/counterexample 做最大覆盖剪枝。
 
-### 阶段五：与长期图谱弱联动
+### 阶段五：弱联动长期记忆
 
-- 只把稳定规则摘要写入 `pattern` 节点，metadata 带 `source=neurosymbolic` 和 `rule_id`。
-- 保持完整规则和执行逻辑在 Rule Store 内。
-- 暂不扩展 `NodeType/EdgeRelation`；KG/scene facts 先存在神经符号模块内部。
-
-### 阶段六：有限 look-ahead
-
-- 在 one-step guard 稳定后，让 Agent Loop 对被拒绝意图生成替代步骤。
-- 后续再考虑多步候选计划或 WALL-E 风格 MPC。
+- 将稳定规则摘要可选写入 `pattern` 节点，metadata 标记 `source=neurosymbolic` 和 `rule_id`。
+- 继续保持完整规则、判定逻辑和 transition buffer 独立。
 
 ---
 
 ## 结论
 
-WALL-E 2.0 适合本项目的核心点是“从执行轨迹中归纳可执行规则，用规则校准动作成功/失败预测”。在当前 MindCraft 架构中，最合理的落点不是改造 MemoryRouter，而是新增一个独立神经符号服务：
+当前阶段应把神经符号模块限定为 **意图层环境判定 + 意图结果复核**。它读取与 decision loop 等价甚至更结构化的环境信息，先判断步骤是否值得执行，再在执行后用状态差异和目标完成度重新解释结果。
 
-- Agent Loop 侧负责意图规则检索和步骤可行性预检。
-- Execution Layer 侧负责代码规则提示和生成后校验。
-- Transition 在执行边界直接记录，不依赖 crystallize。
-- Rule Store 独立持久化，图谱记忆只做可选摘要引用。
+这样可以解决两个关键问题：
 
-这样既能实现“Agent Loop 意图生成 + Coding Agent 代码生成双层校验”，又不会把现有图谱记忆系统变成规则引擎。
+- 执行前：避免 Agent Loop 提出明显不可行、过大或缺少环境证据的步骤，同时给执行层函数级指导。
+- 执行后：不再把 `success=true/false` 当作最终真相，而是区分完全成功、部分成功、无进展、未知和高副作用成功。
+
+代码层校验暂时不纳入本计划，等意图层稳定后再复用这套 Rule Store / DSL / transition 机制迁移。
