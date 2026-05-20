@@ -6,6 +6,8 @@
 import http.server
 import json
 import os
+import socket as socket_module
+import subprocess
 import sys
 from pathlib import Path
 from collections import Counter
@@ -106,6 +108,25 @@ class GraphAPIHandler(http.server.SimpleHTTPRequestHandler):
             print(f"[{self.address_string()}] {args[0]}")
 
 
+def kill_existing():
+    """杀掉占用同一端口的旧进程，确保干净启动。"""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = set()
+        for line in result.stdout.splitlines():
+            if f":{PORT}" in line and "LISTENING" in line:
+                parts = line.strip().split()
+                pids.add(parts[-1])
+        for pid in pids:
+            print(f"[INFO] 杀掉占用端口 {PORT} 的旧进程 PID={pid}")
+            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+    except Exception:
+        pass  # netstat/taskkill 不可用时静默跳过
+
+
 def main():
     data_dir = Path(DATA_DIR)
     if not data_dir.exists():
@@ -115,18 +136,28 @@ def main():
 
     GraphAPIHandler.graph_dir = str(data_dir)
 
+    kill_existing()
+
     print(f"知识图谱可视化服务端")
     print(f"数据目录: {data_dir}")
     print(f"服务地址: http://localhost:{PORT}")
-    print(f"按 Ctrl+C 停止服务")
+    print(f"按 Ctrl+C 停止服务，或直接关闭此窗口")
     print()
 
     server = http.server.HTTPServer(("0.0.0.0", PORT), GraphAPIHandler)
+    server.timeout = 0.5  # 每 0.5s 超时一次，让 Ctrl+C 能即时响应
+    print("服务已启动（按 Ctrl+C 停止）")
     try:
-        server.serve_forever()
+        while True:
+            try:
+                server.handle_request()
+            except socket_module.timeout:
+                pass  # 无请求时继续循环，检查 KeyboardInterrupt
     except KeyboardInterrupt:
-        print("\n服务已停止")
+        pass
+    finally:
         server.server_close()
+        print("服务已停止")
 
 
 if __name__ == "__main__":

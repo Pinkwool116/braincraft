@@ -223,117 +223,138 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     (stats.all_relations || []).forEach(function(r) { activeRelations[r] = true; });
   }
 
-  // 全局回调
+  // 全局回调 — 读取复选框状态，重新筛选
   window.onTypeFilterChange = function() {
+    readFilterState();
+    applyFilters();
+  };
+  window.onRelationFilterChange = function() {
+    readFilterState();
+    applyFilters();
+  };
+
+  function readFilterState() {
     activeTypes = {};
     document.querySelectorAll("#type-filters input[type=checkbox]").forEach(function(cb) {
       if (cb.checked) activeTypes[cb.value] = true;
     });
-    applyFilters();
-  };
-  window.onRelationFilterChange = function() {
     activeRelations = {};
     document.querySelectorAll("#relation-filters input[type=checkbox]").forEach(function(cb) {
       if (cb.checked) activeRelations[cb.value] = true;
     });
-    applyFilters();
-  };
+  }
+
+  function nodeVisible(n, searchTerm, showInvalid) {
+    if (!activeTypes[n.type]) return false;
+    if (!showInvalid && n.invalid) return false;
+    if (searchTerm) {
+      if ((n.content || "").toLowerCase().indexOf(searchTerm) === -1 &&
+          (n.id || "").toLowerCase().indexOf(searchTerm) === -1) return false;
+    }
+    return true;
+  }
+
+  function edgeVisible(e, showInvalid) {
+    if (!activeRelations[e.relation]) return false;
+    if (!showInvalid && e.invalid) return false;
+    return true;
+  }
+
+  function buildVisNode(n) {
+    var label = (n.content || n.id).length > 40
+      ? (n.content || n.id).substring(0, 40) + "…"
+      : (n.content || n.id);
+    return {
+      id: n.id, label: label, group: n.type,
+      title: "<b>[" + (TYPE_LABELS[n.type] || n.type) + "]</b> " + (n.content || n.id),
+      borderWidth: n.invalid ? 0 : 2,
+      shapeProperties: { borderDashes: n.invalid ? [5, 5] : false },
+      opacity: n.invalid ? 0.4 : 1.0,
+      font: { color: n.invalid ? "#888" : "#e0e0e0", size: 12 },
+      size: n.invalid ? 14 : (n.type === "pattern" || n.type === "thought" ? 22 : 18)
+    };
+  }
+
+  function buildVisEdge(e) {
+    return {
+      id: e.source + "_" + e.target + "_" + e.relation,
+      from: e.source, to: e.target,
+      label: e.relation, title: e.relation,
+      width: Math.max(0.5, Math.min(4, (e.weight || 1) * 2)),
+      arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+      color: { color: e.invalid ? "#444" : "#666", highlight: "#fff" },
+      smooth: { type: "curvedCW", roundness: 0.15 },
+      font: { size: 9, color: "#888", strokeWidth: 2, strokeColor: "#222", align: "middle" }
+    };
+  }
 
   function applyFilters() {
-    if (!nodesDs || !edgesDs || !network) return;
+    if (!network) return;
     var searchTerm = document.getElementById("search-input").value.trim().toLowerCase();
     var showInvalid = document.getElementById("show-invalid").checked;
 
-    var nodeView = nodesDs.get({ filter: function(n) {
-      if (!activeTypes[n.type]) return false;
-      if (!showInvalid && n.invalid) return false;
-      if (searchTerm) {
-        if ((n.content || "").toLowerCase().indexOf(searchTerm) === -1 &&
-            (n.id || "").toLowerCase().indexOf(searchTerm) === -1) return false;
-      }
-      return true;
-    }});
+    // 保存当前位置
+    var positions = network.getPositions();
 
-    var nodeIds = {};
-    nodeView.forEach(function(n) { nodeIds[n.id] = true; });
-
-    var edgeView = edgesDs.get({ filter: function(e) {
-      if (!activeRelations[e.relation]) return false;
-      if (!showInvalid && e.invalid) return false;
-      return true;
-    }});
-
-    network.setData({ nodes: nodeView, edges: edgeView });
-
-    var countEl = document.getElementById("search-count");
-    countEl.textContent = searchTerm ? "匹配 " + nodeView.length + " 个节点" : "";
-  }
-
-  function renderGraph() {
-    var container = document.getElementById("graph-container");
-    var showInvalid = document.getElementById("show-invalid").checked;
-
-    // 确保容器有尺寸
-    var rect = container.getBoundingClientRect();
-    console.log("Container size:", rect.width, "x", rect.height);
-
-    var visibleNodes = allNodes.filter(function(n) {
-      if (!activeTypes[n.type]) return false;
-      if (!showInvalid && n.invalid) return false;
-      return true;
-    });
-
+    // 筛选可见节点和边
+    var visibleNodes = allNodes.filter(function(n) { return nodeVisible(n, searchTerm, showInvalid); });
+    var visibleNodeIds = {};
+    visibleNodes.forEach(function(n) { visibleNodeIds[n.id] = true; });
     var visibleEdges = allEdges.filter(function(e) {
-      if (!activeRelations[e.relation]) return false;
-      if (!showInvalid && e.invalid) return false;
+      if (!edgeVisible(e, showInvalid)) return false;
+      if (!visibleNodeIds[e.source] && !visibleNodeIds[e.target]) return false;
       return true;
     });
 
     if (visibleNodes.length === 0) {
+      setStatus("没有匹配的节点", false);
+    } else {
+      setStatus("", false);
+    }
+
+    // 重建 DataSet，恢复已有位置
+    var newNodes = visibleNodes.map(function(n) {
+      var node = buildVisNode(n);
+      if (positions[n.id]) { node.x = positions[n.id].x; node.y = positions[n.id].y; }
+      return node;
+    });
+    var newEdges = visibleEdges.map(buildVisEdge);
+
+    nodesDs = new vis.DataSet(newNodes);
+    edgesDs = new vis.DataSet(newEdges);
+
+    network.setData({ nodes: nodesDs, edges: edgesDs });
+    network.stabilize(0);
+
+    var countEl = document.getElementById("search-count");
+    countEl.textContent = searchTerm ? "匹配 " + visibleNodes.length + " 个节点" : "";
+  }
+
+  function renderGraph() {
+    var container = document.getElementById("graph-container");
+
+    console.log("Container size:", container.getBoundingClientRect().width, "x", container.getBoundingClientRect().height);
+
+    if (allNodes.length === 0) {
       setStatus("暂无图谱数据", false);
       if (network) { network.destroy(); network = null; }
       return;
     }
     setStatus("", false);
 
-    var visNodes = visibleNodes.map(function(n) {
-      var label = (n.content || n.id).length > 40
-        ? (n.content || n.id).substring(0, 40) + "…"
-        : (n.content || n.id);
-      return {
-        id: n.id,
-        label: label,
-        group: n.type,
-        title: "<b>[" + (TYPE_LABELS[n.type] || n.type) + "]</b> " + (n.content || n.id),
-        borderWidth: n.invalid ? 0 : 2,
-        shapeProperties: { borderDashes: n.invalid ? [5, 5] : false },
-        opacity: n.invalid ? 0.4 : 1.0,
-        font: { color: n.invalid ? "#888" : "#e0e0e0", size: 12 },
-        size: n.invalid ? 14 : (n.type === "pattern" || n.type === "thought" ? 22 : 18)
-      };
+    // 初次渲染：仅用默认筛选后可见的节点
+    var initNodes = allNodes.filter(function(n) { return activeTypes[n.type]; });
+    var initNodeIds = {};
+    initNodes.forEach(function(n) { initNodeIds[n.id] = true; });
+    var initEdges = allEdges.filter(function(e) {
+      if (!activeRelations[e.relation]) return false;
+      return initNodeIds[e.source] || initNodeIds[e.target];
     });
 
-    var nodeIdSet = {};
-    visNodes.forEach(function(n) { nodeIdSet[n.id] = true; });
-
-    var visEdges = visibleEdges
-      .filter(function(e) { return nodeIdSet[e.source] || nodeIdSet[e.target]; })
-      .map(function(e) {
-        return {
-          from: e.source,
-          to: e.target,
-          label: e.relation,
-          title: e.relation,
-          width: Math.max(0.5, Math.min(4, (e.weight || 1) * 2)),
-          arrows: { to: { enabled: true, scaleFactor: 0.6 } },
-          color: { color: e.invalid ? "#444" : "#666", highlight: "#fff" },
-          smooth: { type: "curvedCW", roundness: 0.15 },
-          font: { size: 9, color: "#888", strokeWidth: 2, strokeColor: "#222", align: "middle" }
-        };
-      });
-
-    nodesDs = new vis.DataSet(visNodes);
-    edgesDs = new vis.DataSet(visEdges);
+    var allVisNodes = initNodes.map(buildVisNode);
+    var allVisEdges = initEdges.map(buildVisEdge);
+    nodesDs = new vis.DataSet(allVisNodes);
+    edgesDs = new vis.DataSet(allVisEdges);
 
     var options = {
       nodes: { shape: "dot" },
@@ -386,7 +407,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
       }
     });
 
-    console.log("Graph rendered:", visNodes.length, "nodes,", visEdges.length, "edges");
+    console.log("Graph rendered:", allVisNodes.length, "nodes,", allVisEdges.length, "edges");
   }
 
   function renderStats(stats) {
