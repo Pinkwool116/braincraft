@@ -45,13 +45,13 @@ class SkillLibrary:
             },
             "goToPosition": {
                 "params": ["x", "y", "z", "min_distance"],
-                "description": "Go to a specific position",
+                "description": "Walk to a position via ground pathfinder. (x,y,z) targets bot's FEET, not a block! To stand on block at y=N, target feet at y=N+1. Requires continuous walkable ground — fails on narrow ledges, wall tops, vertical climbs. Use dirt pillars to reach high places.",
                 "returns": "boolean (success)",
                 "example": "await skills.goToPosition(bot, 100, 64, 200, 0.5);"
             },
             "goToNearestBlock": {
                 "params": ["blockType", "min_distance", "range"],
-                "description": "Go to nearest block of specified type",
+                "description": "Walk to nearest block of type (same ground-only pathfinder limits as goToPosition)",
                 "returns": "boolean (success)",
                 "example": "await skills.goToNearestBlock(bot, 'crafting_table', 3, 32);"
             },
@@ -155,9 +155,9 @@ class SkillLibrary:
             # Building
             "placeBlock": {
                 "params": ["blockType", "x", "y", "z", "placeOn", "dontCheat"],
-                "description": "Place a block at ABSOLUTE world coordinates (x, y, z are world coords, NOT relative offsets)",
+                "description": "Place a block at ABSOLUTE world coords (x,y,z). (x,y,z) is WHERE THE BLOCK GOES — NOT a reference block! To place on top of a block at y=64, pass y=65. Only auto-clears plants/liquids; returns false for structural blocks. If target already has same blockType, returns false.",
                 "returns": "boolean (success)",
-                "example": "let pos = world.getPosition(bot); await skills.placeBlock(bot, 'stone', pos.x + 2, pos.y, pos.z, 'bottom', false);"
+                "example": "let pos = world.getPosition(bot); await skills.placeBlock(bot, 'stone', pos.x + 2, pos.y, pos.z, 'bottom', false); // stone ends up at (pos.x+2, pos.y, pos.z)"
             },
             "activateNearestBlock": {
                 "params": ["type"],

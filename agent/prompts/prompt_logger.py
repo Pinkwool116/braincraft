@@ -37,8 +37,26 @@ class PromptLogger:
         
         # Counter for naming files (per prompt type for better organization)
         self.prompt_counters = {}
-        
-    def log_prompt(self, 
+
+    def _get_max_counter(self, prompt_type: str) -> int:
+        """Scan existing files for this prompt_type and return the max counter."""
+        type_dir = os.path.join(self.prompts_dir, prompt_type)
+        if not os.path.isdir(type_dir):
+            return 0
+        max_n = 0
+        prefix = f"{prompt_type}_"
+        for fname in os.listdir(type_dir):
+            if not fname.startswith(prefix) or not fname.endswith('.json'):
+                continue
+            try:
+                n = int(fname[len(prefix):fname.index('_', len(prefix))])
+                if n > max_n:
+                    max_n = n
+            except (ValueError, IndexError):
+                continue
+        return max_n
+
+    def log_prompt(self,
                    prompt: str, 
                    response: Optional[str] = None,
                    brain_layer: str = "unknown",
@@ -61,7 +79,7 @@ class PromptLogger:
             return None
         
         if prompt_type not in self.prompt_counters:
-            self.prompt_counters[prompt_type] = 0
+            self.prompt_counters[prompt_type] = self._get_max_counter(prompt_type)
         self.prompt_counters[prompt_type] += 1
         counter = self.prompt_counters[prompt_type]
         

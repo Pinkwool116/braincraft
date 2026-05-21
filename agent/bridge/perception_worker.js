@@ -575,7 +575,6 @@ export class PerceptionWorker {
     if (!this._running || !this.bot?.entity) return;
     this._checkHostileClose();
     this._checkLavaNearby();
-    this._checkCliffAhead();
     this._checkDrowning();
       this._checkWeatherUrgent();
   }
@@ -633,34 +632,6 @@ export class PerceptionWorker {
         direction: 'below',
         position: { x: below.position.x, y: below.position.y, z: below.position.z }
       });
-    }
-  }
-
-  _checkCliffAhead() {
-    if (!this.bot?.entity) return;
-    const yaw = this.bot.entity.yaw;
-    const origin = this.bot.entity.position.offset(0, 0, 0);
-
-    // Check blocks 1-4 ahead at y-1, y-2, y-3
-    for (let ahead = 1; ahead <= 4; ahead++) {
-      const dx = -Math.sin(yaw) * ahead;
-      const dz = -Math.cos(yaw) * ahead;
-      let allAir = true;
-      for (let down = 1; down <= 3; down++) {
-        const pos = origin.offset(dx, -down, dz);
-        const block = this.bot.blockAt(pos);
-        if (block && block.name !== 'air' && block.name !== 'cave_air') {
-          allAir = false;
-          break;
-        }
-      }
-      if (allAir) {
-        this.onUrgent('cliff_ahead', {
-          distance: ahead,
-          direction: this._directionTo(origin.offset(dx, 0, dz))
-        });
-        return;
-      }
     }
   }
 

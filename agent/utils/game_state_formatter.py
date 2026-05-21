@@ -17,21 +17,29 @@ class GameStateFormatter:
     def format_stats(state: Dict[str, Any]) -> str:
         """
         Format bot status information (health, food, position).
-        
+
         Args:
             state: Game state dictionary
-            
+
         Returns:
             Formatted stats string
         """
-        position = state.get('position', {})
+        position = state.get('position') or {}
         health = state.get('health', 20)
         food = state.get('food', 20)
-        
+
+        px = position.get('x')
+        py = position.get('y')
+        pz = position.get('z')
+        if px is not None and py is not None and pz is not None:
+            pos_str = f"x:{px:.1f}, y:{py:.1f}, z:{pz:.1f}"
+        else:
+            pos_str = "(等待游戏状态同步...)"
+
         stats = f"""Health: {health}/20
 Food: {food}/20
-Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{position.get('z', 0):.1f}"""
-        
+Position: {pos_str}"""
+
         return stats
     
     @staticmethod
@@ -269,8 +277,14 @@ Position: x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{positio
         
         # Position (for high-level prompts)
         if '$POSITION' in prompt:
-            position = state.get('position', {})
-            position_str = f"x:{position.get('x', 0):.1f}, y:{position.get('y', 0):.1f}, z:{position.get('z', 0):.1f}"
+            position = state.get('position') or {}
+            px = position.get('x')
+            py = position.get('y')
+            pz = position.get('z')
+            if px is not None and py is not None and pz is not None:
+                position_str = f"x:{px:.1f}, y:{py:.1f}, z:{pz:.1f}"
+            else:
+                position_str = "(等待游戏状态同步...)"
             prompt = prompt.replace('$POSITION', position_str)
         
         # Health and Food (for high-level prompts)

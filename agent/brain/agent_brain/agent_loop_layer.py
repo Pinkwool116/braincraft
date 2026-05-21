@@ -391,28 +391,45 @@ class AgentLoopLayer:
 
         elif tool_name == 'inspect_surroundings':
             warnings = result.get('_warnings', [])
-            detail = {
-                'success': result.get('success', False),
-                'result_mode': result.get('mode'),
-                'radius': result.get('radius', tool_args.get('radius')),
-                'include': result.get('include', tool_args.get('include', 'both')),
-                'scan_mode': result.get('scan_mode', tool_args.get('scan_mode', 'important')),
-                'targets': result.get('targets', tool_args.get('targets', [])),
-                'focus': result.get('focus', tool_args.get('focus', '')),
-                'summary_text': result.get('summary_text'),
-                'summary': result.get('summary'),
-                'samples': result.get('samples'),
-                'truncated': result.get('truncated', False),
-                'error': result.get('error'),
-                'warnings': warnings,
-            }
-            content = f"细致观察周围环境: radius={detail['radius']}, include={detail['include']}, mode={detail['scan_mode']}"
+            invalid_targets = result.get('invalid_targets', [])
+            suggestions = result.get('suggestions', {})
+            radius = result.get('radius', tool_args.get('radius'))
+            scan_mode = result.get('scan_mode', tool_args.get('scan_mode', 'all'))
+            summary_text = result.get('summary_text', '')
+            total_blocks = result.get('total', {}).get('blocks', 0)
+
+            content_parts = [f"观察周围环境: radius={radius}, mode={scan_mode}"]
             if warnings:
-                content += " [参数警告: " + "; ".join(warnings) + "]"
+                content_parts.append("[参数警告: " + "; ".join(warnings) + "]")
+            if invalid_targets:
+                content_parts.append("[无效目标: " + ", ".join(invalid_targets) + "]")
+            content = " ".join(content_parts)
+
+            # Only store the perception LLM's summary text, not the raw scan data.
+            # Fall back to a brief statistical summary if no LLM summary is available.
+            if summary_text:
+                detail = summary_text
+            elif total_blocks > 0:
+                y_range = result.get('summary', {}).get('y_range', {})
+                detail = f"扫描到 {total_blocks} 个方块" + (
+                    f", Y层范围 {y_range.get('min')}~{y_range.get('max')}" if y_range else ""
+                )
+            else:
+                detail = "扫描范围内未检测到方块"
+
+            # Append invalid target suggestions to detail if present
+            if invalid_targets and suggestions:
+                sug_text = "; ".join(
+                    f"'{t}' 可能拼写错误，建议: {', '.join(suggestions.get(t, [])[:3])}"
+                    for t in invalid_targets
+                )
+                detail = (detail or "") + "\n" + sug_text
+
             self.memory_manager.log(
-                entry_type='action',
+                entry_type='observation',
                 content=content,
-                detail=json.dumps(detail, ensure_ascii=False),
+                detail=detail,
+                consolidate_weight=0,
             )
 
         elif tool_name == 'scan_terrain':

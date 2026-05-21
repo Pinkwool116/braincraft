@@ -943,7 +943,7 @@ class BrainBridge {
         const targets = Array.isArray(data.targets)
             ? data.targets.map(t => String(t).trim()).filter(Boolean)
             : (data.targets ? [String(data.targets).trim()] : []);
-        const limit = Math.max(1, Math.min(parseInt(data.limit ?? 80, 10) || 80, 300));
+        const limit = Math.max(1, Math.min(parseInt(data.limit ?? 300, 10) || 300, 1000));
 
         const targetInfo = this.resolveInspectTargets(targets);
         if (targets.length > 0 && targetInfo.validBlocks.size === 0 && targetInfo.validEntities.size === 0) {
@@ -1116,8 +1116,22 @@ class BrainBridge {
     buildInspectSummary(blocks, entities) {
         return {
             blocks_by_name: this.countByNameWithNearest(blocks),
-            entities_by_name: this.countByNameWithNearest(entities)
+            entities_by_name: this.countByNameWithNearest(entities),
+            blocks_by_y: this.countBlocksByY(blocks),
+            y_range: blocks.length > 0
+                ? { min: Math.min(...blocks.map(b => b.position.y)), max: Math.max(...blocks.map(b => b.position.y)) }
+                : null
         };
+    }
+
+    countBlocksByY(blocks) {
+        const yLevels = {};
+        for (const item of blocks) {
+            const y = item.position.y;
+            if (!yLevels[y]) yLevels[y] = {};
+            yLevels[y][item.name] = (yLevels[y][item.name] || 0) + 1;
+        }
+        return yLevels;
     }
 
     countByNameWithNearest(items) {
@@ -1127,10 +1141,13 @@ class BrainBridge {
                 stats[item.name] = {
                     count: 0,
                     nearest: item,
-                    directions: {}
+                    directions: {},
+                    y_levels: {}
                 };
             }
             stats[item.name].count++;
+            const y = item.position.y;
+            stats[item.name].y_levels[y] = (stats[item.name].y_levels[y] || 0) + 1;
             stats[item.name].directions[item.direction] = (stats[item.name].directions[item.direction] || 0) + 1;
             if (item.distance < stats[item.name].nearest.distance) {
                 stats[item.name].nearest = item;
@@ -1266,6 +1283,21 @@ class BrainBridge {
         this.bot = createBot(options);
         this.isBotReady = false;
         this.spawnInitialized = false; // one-time init guard for per-session setup
+
+        // Monkey-patch bot.emit to catch synchronous throws in any plugin's
+        // event callback (physics ticks, pathfinder monitorMovement, etc.).
+        // These callbacks run on async stacks outside try-catch reach, so
+        // without this, a single buggy plugin crashes the entire process.
+        const origEmit = this.bot.emit.bind(this.bot);
+        this.bot.emit = function (event, ...args) {
+            try {
+                return origEmit(event, ...args);
+            } catch (err) {
+                console.error(`[Bot] Uncaught error in '${event}' handler:`, err.message);
+                console.error(err.stack);
+                return false;
+            }
+        };
 
         // Add modes stub for skills.js compatibility immediately after bot creation
         // (Original project uses modes system, we don't need it but skills.js expects it)

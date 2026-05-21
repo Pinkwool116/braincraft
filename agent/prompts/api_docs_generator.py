@@ -44,9 +44,12 @@ def get_skills_api_docs() -> str:
   - Returns: boolean (true if reached, false if failed)
   - Example: `await skills.goToPlayer(bot, 'Steve', 2);`
 
-- **async skills.goToPosition(bot, x, y, z, min_distance=0.5)**: Navigate to specific coordinates
-  - Returns: boolean (true if reached, false if failed)
+- **async skills.goToPosition(bot, x, y, z, min_distance=0.5)**: Walk to coordinates via ground-based A* pathfinder
+  - **(x, y, z) is the bot's FEET position, NOT a block position! To stand on a block at (bx, by, bz), target your feet at (bx, by+1, bz).**
+  - **LIMITATION: pathfinder needs continuous walkable ground. It CANNOT navigate to positions on narrow ledges (1-block-wide wall tops, isolated pillars), climb vertical walls, or cross gaps with air below. For elevated positions, build a dirt pillar first then step across.**
+  - Returns: boolean (true if reached, false if pathfinder cannot find a route)
   - Example: `await skills.goToPosition(bot, 100, 64, -200, 1.0);`
+  - Example: Block at (-5, 109, 6) → to stand on it, call `goToPosition(bot, -5, 110, 6)` (feet on top of the block)
 
 - **async skills.moveAway(bot, distance)**: Move away from current position
   - Returns: void
@@ -96,13 +99,19 @@ def get_skills_api_docs() -> str:
 
 ### Building Skills
 - **async skills.placeBlock(bot, blockType, x, y, z, placeOn='bottom', dontCheat=false)**: Place a block at ABSOLUTE world coordinates
-  - Parameters: x, y, z are ABSOLUTE world coordinates (NOT relative offsets!)
+  - **CRITICAL: (x, y, z) is the exact world position where the new block WILL END UP. It is NOT a reference/adjacent block!**
+  - Parameters: x, y, z are the TARGET DESTINATION coordinates — where you want the new block to appear
   - Returns: boolean (success)
   - Example: `let pos = world.getPosition(bot); await skills.placeBlock(bot, 'stone', pos.x + 2, pos.y, pos.z);`
+    This places stone at 2 blocks east of bot, at the same y-level. The stone ends up AT (pos.x+2, pos.y, pos.z).
+  - Example: To place a block on top of an existing block at (100, 64, 200), call `placeBlock(bot, 'dirt', 100, 65, 200, 'top')` — target y=65, NOT y=64!
   - Example: `await skills.placeBlock(bot, 'torch', 100, 64, 200, 'side');`
-  - placeOn: 'top', 'bottom', 'north', 'south', 'east', 'west', 'side' (preferred side to place on)
+  - **WARNING: placeBlock will only auto-clear plants, liquids, and snow. If the target position has a structural block (oak_planks, oak_log, dirt, stone, glass, etc.), placeBlock returns false WITHOUT breaking it. You must manually break the block first if you really want to replace it.**
+  - **WARNING: If the target block is the same type (e.g., placing oak_log where oak_log already exists), it returns false without placing. Use this to skip already-placed blocks.**
+  - **WARNING: placing dirt on grass_block returns false ("already there") — break the grass first, or target the air above.**
+  - placeOn: 'top', 'bottom', 'north', 'south', 'east', 'west', 'side' (preferred face to place against for finding a support block)
   - dontCheat: set to true to override cheat mode and place normally
-  - Note: Must have adjacent block to place against, cannot place in mid-air
+  - Note: Must have an adjacent solid block to place against, cannot place in mid-air with no support
 
 ### Inventory Skills
 - **async skills.equip(bot, itemName)**: Equip an item from inventory to proper body part (hand, head, torso, legs, feet)
@@ -116,7 +125,7 @@ def get_skills_api_docs() -> str:
   - Example: `await skills.discard(bot, 'dirt', 64);`
 
 ### Advanced Movement Skills
-- **async skills.goToNearestBlock(bot, blockType, min_distance=2, range=64)**: Go to nearest block of type
+- **async skills.goToNearestBlock(bot, blockType, min_distance=2, range=64)**: Walk to nearest block of type (uses pathfinder — same ground-only limitations as goToPosition)
   - Returns: boolean (success)
   - Example: `await skills.goToNearestBlock(bot, 'crafting_table', 3, 32);`
   - Note: More convenient than getNearestBlock + goToPosition

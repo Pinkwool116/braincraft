@@ -224,7 +224,7 @@ class ReflexLayer:
         reflex response (combat, flee, stop movement).
 
         Args:
-            event_type: 'hostile_close', 'lava_nearby', 'cliff_ahead', 'drowning'
+            event_type: 'hostile_close', 'lava_nearby', 'drowning'
             data: Threat details (distance, direction, entity info, etc.)
         """
         logger.info(f"Urgent perception threat: {event_type} data={data}")
@@ -263,13 +263,6 @@ class ReflexLayer:
                 })
             except Exception as e:
                 logger.error(f"Lava reflex error: {e}")
-
-        elif event_type == 'cliff_ahead':
-            # Pathfinder natively avoids cliffs (maxDropDown=4) — no reflex needed.
-            # Canceling pathfinding here would create a harmful conflict loop where
-            # goto is repeatedly interrupted by cliff detection, breaking movement.
-            distance = data.get('distance', 0)
-            logger.debug(f"Cliff ahead at {distance} blocks (ignored — pathfinder handles this)")
 
         elif event_type == 'drowning':
             logger.warning("Drowning detected by perception worker")

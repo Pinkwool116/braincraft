@@ -18,13 +18,12 @@ class InspectSurroundingsTool:
     name: str = "inspect_surroundings"
     description: str = (
         "细致观察周围方块/实体。参数: radius=1..20; include='blocks'|'entities'|'both' "
-        "(默认 both); targets=[方块或实体名称]，为空时观察默认重要目标; "
-        "scan_mode='important'|'targets_only'|'all' (默认 important); "
-        "focus=观察重点; limit=返回样例上限(默认80, 最大300)。"
-        "radius<=3 时返回完整匹配信息，适合查脚边、头顶、建筑/挖掘的精确坐标。"
+        "(默认 both); targets=[方块或实体名称]，为空时观察所有非空气方块; "
+        "scan_mode='all'|'important'|'targets_only' (默认 all，返回所有非空气方块); "
+        "focus=观察重点; limit=返回样例上限(默认300, 最大1000)。"
+        "radius<=3 时返回完整匹配信息（每个方块的精确坐标），适合建造前确认目标位置、查脚边、头顶。"
         "radius>3 时必须提供 focus，工具会围绕重点摘要，适合找资源、敌人、洞口、路线或风险。"
-        "scan_mode='all' 数据量很大，半径不要太大；radius>3 且 all 时尤其要写清 focus。"
-        "常用方块名示例: oak_log, birch_log, spruce_log, stone, grass_block, dirt, sand, "
+        "常用方块名示例: oak_log, oak_planks, birch_log, spruce_log, stone, grass_block, dirt, sand, "
         "gravel, cobblestone, deepslate, obsidian, coal_ore, iron_ore, copper_ore, gold_ore, "
         "diamond_ore, oak_leaves, short_grass, water, lava, chest, crafting_table, furnace, "
         "bed, wheat, torch, door, rail。"
@@ -107,9 +106,9 @@ class InspectSurroundingsTool:
         if include not in ("blocks", "entities", "both"):
             raise ValueError("include must be 'blocks', 'entities', or 'both'")
 
-        scan_mode = str(args.get("scan_mode", "important")).lower()
-        if scan_mode not in ("important", "targets_only", "all"):
-            raise ValueError("scan_mode must be 'important', 'targets_only', or 'all'")
+        scan_mode = str(args.get("scan_mode", "all")).lower()
+        if scan_mode not in ("all", "important", "targets_only"):
+            raise ValueError("scan_mode must be 'all', 'important', or 'targets_only'")
 
         raw_targets = args.get("targets", [])
         if raw_targets in (None, ""):
@@ -127,12 +126,12 @@ class InspectSurroundingsTool:
             raise ValueError("radius > 3 requires a non-empty focus for summary")
 
         try:
-            limit = int(args.get("limit", 80))
+            limit = int(args.get("limit", 300))
         except (TypeError, ValueError):
-            limit = 80
-        if limit > 300:
-            warnings.append(f"limit={limit} 超出最大值300，已截断为300")
             limit = 300
+        if limit > 1000:
+            warnings.append(f"limit={limit} 超出最大值1000，已截断为1000")
+            limit = 1000
         limit = max(1, limit)
 
         result = {
@@ -170,6 +169,9 @@ class InspectSurroundingsTool:
             except Exception as e:
                 logger.warning("inspect_surroundings summary via PerceptionManager failed: %s", e)
 
+        invalid_targets = result.get("invalid_targets", [])
+        suggestions = result.get("suggestions", {})
+
         compact = {
             "success": True,
             "mode": "summary",
@@ -182,6 +184,8 @@ class InspectSurroundingsTool:
             "summary": result.get("summary", {}),
             "samples": result.get("samples", {}),
             "truncated": result.get("truncated", False),
+            "invalid_targets": invalid_targets,
+            "suggestions": suggestions,
         }
         if result.get("invalid_targets"):
             compact["invalid_targets"] = result["invalid_targets"]

@@ -703,15 +703,20 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn = 'bottom', do
         log(bot, `${blockType} already at ${targetBlock.position}.`);
         return false;
     }
-    const empty_blocks = ['air', 'water', 'lava', 'grass', 'short_grass', 'tall_grass', 'snow', 'dead_bush', 'fern'];
-    if (!empty_blocks.includes(targetBlock.name)) {
-        log(bot, `${targetBlock.name} in the way at ${targetBlock.position}.`);
+    const auto_clearable = ['air', 'water', 'lava', 'grass', 'short_grass', 'tall_grass', 'snow', 'dead_bush', 'fern',
+                           'vine', 'seagrass', 'kelp', 'bubble_column', 'cobweb'];
+    if (!auto_clearable.includes(targetBlock.name)) {
+        log(bot, `Cannot place ${blockType} at ${targetBlock.position}: ${targetBlock.name} is in the way.`);
+        return false;
+    }
+    if (targetBlock.name !== 'air') {
+        // Auto-clear plants/liquids that are in the way
         const removed = await breakBlockAt(bot, x, y, z);
         if (!removed) {
-            log(bot, `Cannot place ${blockType} at ${targetBlock.position}: block in the way.`);
+            log(bot, `Cannot clear ${targetBlock.name} at ${targetBlock.position}.`);
             return false;
         }
-        await new Promise(resolve => setTimeout(resolve, 200)); // wait for block to break
+        await new Promise(resolve => setTimeout(resolve, 200));
     }
     // get the buildoffblock and facevec based on whichever adjacent block is not empty
     let buildOffBlock = null;
@@ -739,7 +744,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn = 'bottom', do
 
     for (let d of dirs) {
         const block = bot.blockAt(target_dest.plus(d));
-        if (!empty_blocks.includes(block.name)) {
+        if (!auto_clearable.includes(block.name)) {
             buildOffBlock = block;
             faceVec = new Vec3(-d.x, -d.y, -d.z); // invert
             break;
@@ -1075,27 +1080,33 @@ export async function goToGoal(bot, goal) {
      **/
 
     const nonDestructiveMovements = new pf.Movements(bot);
-    const dontBreakBlocks = ['glass', 'glass_pane'];
-    for (let block of dontBreakBlocks) {
-        nonDestructiveMovements.blocksCantBreak.add(mc.getBlockId(block));
+    // Protect ALL structural building blocks and terrain from being broken by pathfinder.
+    // Precomputed once via mc.getBlockName (uses internal mcdata.blocks which has .name)
+    const PROTECTED_BLOCK_IDS = _getProtectedBlockIds();
+    for (let id of PROTECTED_BLOCK_IDS) {
+        nonDestructiveMovements.blocksCantBreak.add(id);
     }
     nonDestructiveMovements.placeCost = 2;
     nonDestructiveMovements.digCost = 10;
 
+    // Destructive fallback: still protects the same structural blocks
     const destructiveMovements = new pf.Movements(bot);
+    for (let id of PROTECTED_BLOCK_IDS) {
+        destructiveMovements.blocksCantBreak.add(id);
+    }
 
-    let final_movements = destructiveMovements;
+    let final_movements = nonDestructiveMovements;
 
     const pathfind_timeout = 3000;
     if (await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status === 'success') {
-        final_movements = nonDestructiveMovements;
         log(bot, `Found non-destructive path.`);
     }
     else if (await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout).status === 'success') {
-        log(bot, `Found destructive path.`);
+        final_movements = destructiveMovements;
+        log(bot, `Found path (may break leaves/vegetation).`);
     }
     else {
-        log(bot, `Path not found, but attempting to navigate anyway using destructive movements.`);
+        log(bot, `Path not found, attempting with non-destructive movements only.`);
     }
 
     const doorCheckInterval = startDoorInterval(bot);
@@ -2131,4 +2142,47 @@ export async function useToolOnBlock(bot, toolName, block) {
     }
     log(bot, `Used ${toolName} on ${block.name}.`);
     return true;
+}
+
+// Precompute block IDs that pathfinder must never break (structural blocks, terrain, etc.)
+// Called once lazily — result cached at module level.
+let _PROTECTED_IDS_CACHE = null;
+function _getProtectedBlockIds() {
+    if (_PROTECTED_IDS_CACHE) return _PROTECTED_IDS_CACHE;
+
+    const dontBreakPatterns = [
+        '_planks', '_log', '_wood', '_stem', '_hyphae', '_door', '_trapdoor', '_fence', '_fence_gate',
+        '_stairs', '_slab', '_sign', '_button', '_pressure_plate', '_boat',
+        'stone', 'cobblestone', 'granite', 'diorite', 'andesite', 'deepslate', 'tuff',
+        'bricks', 'prismarine', 'obsidian', 'bedrock',
+        'grass_block', 'dirt', 'sand', 'gravel', 'clay', 'terracotta', 'concrete',
+        '_ore', 'coal_block', 'iron_block', 'gold_block', 'diamond_block', 'emerald_block',
+        'redstone_block', 'lapis_block', 'copper_block', 'netherite_block', 'quartz_block',
+        'glass', 'wool', 'carpet', 'concrete_powder', 'mud', 'soul_sand', 'soul_soil',
+        'magma', 'end_stone', 'purpur', 'crafting_table', 'furnace', 'chest', 'barrel',
+    ];
+
+    const ids = new Set();
+    try {
+        const allIds = mc.getAllBlockIds([]);
+        for (const id of allIds) {
+            const name = mc.getBlockName(id);
+            if (!name) continue;
+            for (const pattern of dontBreakPatterns) {
+                if (name.includes(pattern)) {
+                    ids.add(id);
+                    break;
+                }
+            }
+        }
+    } catch (e) {
+        // Fallback: protect at minimum glass
+        const glassId = mc.getBlockId('glass');
+        if (glassId) ids.add(glassId);
+        const glassPaneId = mc.getBlockId('glass_pane');
+        if (glassPaneId) ids.add(glassPaneId);
+    }
+
+    _PROTECTED_IDS_CACHE = ids;
+    return ids;
 }
